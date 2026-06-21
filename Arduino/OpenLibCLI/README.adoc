@@ -1,6 +1,6 @@
 = OpenLibCLI Arduino Library
 
-OpenLibCLI is a pure-C command line interface (CLI) engine designed for embedded and desktop systems.
+OpenLibCLI is a pure C99 command line interface (CLI) engine designed for embedded and desktop systems.
 This Arduino library package contains the core CLI sources under `src/cli` and ready-to-run Arduino demos under `examples`.
 
 == Folder Layout
@@ -12,6 +12,17 @@ This Arduino library package contains the core CLI sources under `src/cli` and r
 == Installation
 
 . Copy this folder (`openlibcli-embedded-demos\Arduino\OpenLibCLI`) into your Arduino libraries directory.
+. 
+[cols="1,2",options="header"]
+|===
+| Platform | Path
+
+| Windows
+| `C:\Users\<user>\Documents\Arduino\libraries\OpenLibCLI\`
+
+| Linux
+| `~/Arduino/libraries/OpenLibCLI/`
+|===
 . Restart Arduino IDE.
 . Open an example from `File -> Examples -> OpenLibCLI`.
 
