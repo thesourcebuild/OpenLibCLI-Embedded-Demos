@@ -1,0 +1,21 @@
+= OpenLibCLI Arduino Library
+
+OpenLibCLI is a pure-C command line interface (CLI) engine designed for embedded and desktop systems.
+This Arduino library package contains the core CLI sources under `src/cli` and ready-to-run Arduino demos under `examples`.
+
+== Folder Layout
+
+* `src/cli` - core OpenLibCLI engine sources and headers.
+* `examples/serial` - UART/Serial demo sketch.
+* `examples/telnet` - WiFi Telnet demo sketch.
+
+== Installation
+
+. Copy this folder (`openlibcli-embedded-demos\Arduino\OpenLibCLI`) into your Arduino libraries directory.
+. Restart Arduino IDE.
+. Open an example from `File -> Examples -> OpenLibCLI`.
+
+== Notes
+
+* The Telnet example requires a compatible WiFi board and valid SSID/password.
+* Demos are configured for static allocation behavior in the included cli_config headers.

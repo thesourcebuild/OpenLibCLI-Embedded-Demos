@@ -1,0 +1,5 @@
+../Core/Src/cli_transport_serial.c:67:6:cli_transport_serial_init	3
+../Core/Src/cli_transport_serial.c:90:28:stm32_serial_available	5
+../Core/Src/cli_transport_serial.c:118:28:stm32_serial_read	4
+../Core/Src/cli_transport_serial.c:144:28:stm32_serial_write	5
+../Core/Src/cli_transport_serial.c:166:28:stm32_serial_flush	1

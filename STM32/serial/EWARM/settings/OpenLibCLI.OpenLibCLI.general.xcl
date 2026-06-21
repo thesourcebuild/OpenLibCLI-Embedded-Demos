@@ -1,0 +1,15 @@
+C:\iar\ewarm-9.70.4\arm\bin\armproc.dll
+
+ C:\iar\ewarm-9.70.4\arm\bin\armstlink.dll
+
+ I:\openlibcli-project\OpenLibCLI-Embedded-Demos\STM32\serial\EWARM\OpenLibCLI\Exe\OpenLibCLI.out
+
+ --plugin=C:\iar\ewarm-9.70.4\arm\bin\armLibSupportUniversal.dll
+
+ --device_macro=C:\iar\ewarm-9.70.4\arm/config/debugger/ST/STM32F1xx.dmac
+
+ --flash_loader=C:\iar\ewarm-9.70.4\arm/config/flashloader/ST/FlashSTM32F10xxB.board
+
+ 
+
+

@@ -1,0 +1,96 @@
+#######################################
+# Syntax Coloring Map For OpenLibCLI
+#######################################
+
+# Datatypes (KEYWORD1)
+cli_t	KEYWORD1
+cli_transport_t	KEYWORD1
+cli_platform_t	KEYWORD1
+cli_tick_stats_t	KEYWORD1
+cli_session_state_t	KEYWORD1
+cli_cmd_handle_t	KEYWORD1
+cli_cmd_t	KEYWORD1
+cli_transport_kind_t	KEYWORD1
+
+# Methods and Functions (KEYWORD2)
+cli_lib_init	KEYWORD2
+cli_init	KEYWORD2
+cli_done	KEYWORD2
+cli_get_session_state	KEYWORD2
+cli_restart_session	KEYWORD2
+cli_request_auth	KEYWORD2
+cli_start	KEYWORD2
+cli_session_engine	KEYWORD2
+cli_loop	KEYWORD2
+cli_feed	KEYWORD2
+cli_add_command	KEYWORD2
+cli_add_command_duplicate	KEYWORD2
+cli_cmd_add_alias	KEYWORD2
+cli_remove_command	KEYWORD2
+cli_remove_command_recursive	KEYWORD2
+cli_hide_command	KEYWORD2
+cli_add_builtin_cmds	KEYWORD2
+cli_println	KEYWORD2
+cli_print	KEYWORD2
+cli_error	KEYWORD2
+cli_print_flush	KEYWORD2
+cli_sscanf	KEYWORD2
+cli_set_print_transport_cb	KEYWORD2
+cli_set_mode	KEYWORD2
+cli_set_privilege	KEYWORD2
+cli_get_mode	KEYWORD2
+cli_get_privilege	KEYWORD2
+cli_set_hostname	KEYWORD2
+cli_set_banner	KEYWORD2
+cli_set_enable_secret	KEYWORD2
+cli_set_enable_cb	KEYWORD2
+cli_set_exit_cb	KEYWORD2
+cli_set_quit_cb	KEYWORD2
+cli_set_mode_name	KEYWORD2
+cli_set_mode_change_cb	KEYWORD2
+cli_set_time_source	KEYWORD2
+cli_set_micros_source	KEYWORD2
+cli_set_idle_timeout	KEYWORD2
+cli_set_idle_timeout_cb	KEYWORD2
+cli_set_idle_timeout_mode	KEYWORD2
+cli_set_periodic_cb	KEYWORD2
+cli_set_periodic_interval	KEYWORD2
+cli_touch_activity	KEYWORD2
+cli_check_idle_timeout	KEYWORD2
+cli_clear_history	KEYWORD2
+cli_set_ansi_supported	KEYWORD2
+cli_set_echo	KEYWORD2
+cli_set_userdata	KEYWORD2
+cli_get_userdata	KEYWORD2
+cli_get_transport_kind	KEYWORD2
+cli_add_user	KEYWORD2
+cli_set_authorization_cb	KEYWORD2
+cli_require_authorization	KEYWORD2
+cli_set_auth_failure_mode	KEYWORD2
+cli_set_auth_lockout_duration	KEYWORD2
+cli_set_exit_root_policy	KEYWORD2
+cli_set_quit_policy	KEYWORD2
+cli_tick_stats_get	KEYWORD2
+cli_tick_stats_reset	KEYWORD2
+
+# Constants (LITERAL1)
+CLI_OK	LITERAL1
+CLI_ERR	LITERAL1
+CLI_ERR_QUIT	LITERAL1
+CLI_ERR_NOMEM	LITERAL1
+CLI_ERR_AUTH	LITERAL1
+CLI_ERR_AMBIG	LITERAL1
+CLI_CMD_ROOT	LITERAL1
+CLI_CMD_INVALID	LITERAL1
+CLI_MODE_ANY	LITERAL1
+CLI_MODE_EXEC	LITERAL1
+CLI_MODE_ENABLE	LITERAL1
+CLI_MODE_CONFIG	LITERAL1
+CLI_PRIV_UNPRIVILEGED	LITERAL1
+CLI_PRIV_USER	LITERAL1
+CLI_PRIV_PRIVILEGED	LITERAL1
+CLI_PRIV_SUPERADMIN	LITERAL1
+CLI_SESSION_STOP	LITERAL1
+CLI_SESSION_INIT	LITERAL1
+CLI_SESSION_SHOW_BANNER	LITERAL1
+CLI_SESSION_RUN	LITERAL1
