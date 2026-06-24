@@ -2,6 +2,12 @@
 
 This directory contains the STM32 serial (UART) demo for OpenLibCLI.
 
+## Table of Contents
+
+- [Target](#target)
+- [Development Environment](#development-environment)
+- [Notes](#notes)
+
 ## Target
 
 - Board: STM32 Nucleo-F103RB with RAM=20KB, ROM(Flash)=64KB/128KB

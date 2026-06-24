@@ -7,23 +7,23 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
   1 .text         0000661c  0800010c  0800010c  0000110c  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, CODE
-  2 .rodata       00000ac4  08006728  08006728  00007728  2**2
+  2 .rodata       00000ab0  08006728  08006728  00007728  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  3 .ARM.extab    00000000  080071ec  080071ec  0000905c  2**0
+  3 .ARM.extab    00000000  080071d8  080071d8  0000905c  2**0
                   CONTENTS, READONLY
-  4 .ARM          00000008  080071ec  080071ec  000081ec  2**2
+  4 .ARM          00000008  080071d8  080071d8  000081d8  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  5 .preinit_array 00000000  080071f4  080071f4  0000905c  2**0
+  5 .preinit_array 00000000  080071e0  080071e0  0000905c  2**0
                   CONTENTS, ALLOC, LOAD, DATA
-  6 .init_array   00000004  080071f4  080071f4  000081f4  2**2
+  6 .init_array   00000004  080071e0  080071e0  000081e0  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  7 .fini_array   00000004  080071f8  080071f8  000081f8  2**2
+  7 .fini_array   00000004  080071e4  080071e4  000081e4  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
-  8 .data         0000005c  20000000  080071fc  00009000  2**2
+  8 .data         0000005c  20000000  080071e8  00009000  2**2
                   CONTENTS, ALLOC, LOAD, DATA
-  9 .bss          00000dd4  2000005c  08007258  0000905c  2**2
+  9 .bss          00000dd4  2000005c  08007244  0000905c  2**2
                   ALLOC
- 10 ._user_heap_stack 00001200  20000e30  08007258  00009e30  2**0
+ 10 ._user_heap_stack 00001200  20000e30  08007244  00009e30  2**0
                   ALLOC
  11 .ARM.attributes 00000029  00000000  00000000  0000905c  2**0
                   CONTENTS, READONLY
@@ -2790,7 +2790,7 @@ static bool cli_case_prefix_match(const char *str, const char *prefix) {
  8001372:	bc80      	pop	{r7}
  8001374:	4770      	bx	lr
  8001376:	bf00      	nop
- 8001378:	080070b6 	.word	0x080070b6
+ 8001378:	080070a2 	.word	0x080070a2
 
 0800137c <cli_raw_write>:
  * @brief Write a raw byte buffer to the transport.
@@ -5906,7 +5906,7 @@ static void cli_tab_complete(cli_struct_t *cli) {
  8002864:	e013      	b.n	800288e <cli_tab_complete+0x38e>
  8002866:	bf00      	nop
  8002868:	080068bc 	.word	0x080068bc
- 800286c:	080070b6 	.word	0x080070b6
+ 800286c:	080070a2 	.word	0x080070a2
         cli_insert_char(cli, full[i]);
  8002870:	f8d7 20bc 	ldr.w	r2, [r7, #188]	@ 0xbc
  8002874:	f8d7 30dc 	ldr.w	r3, [r7, #220]	@ 0xdc
@@ -9644,7 +9644,7 @@ static int8_t cmd_sub(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
  8004278:	687b      	ldr	r3, [r7, #4]
  800427a:	2b04      	cmp	r3, #4
  800427c:	dd04      	ble.n	8004288 <cmd_sub+0x28>
-    cli_error(cli, "Usage: sub <a> <b>  or  sub <a> - <b>");
+    cli_error(cli, "Usage: sub <a> <b>");
  800427e:	491f      	ldr	r1, [pc, #124]	@ (80042fc <cmd_sub+0x9c>)
  8004280:	68f8      	ldr	r0, [r7, #12]
  8004282:	f7fc ff6d 	bl	8001160 <cli_error_p>
@@ -9720,8 +9720,8 @@ static int8_t cmd_sub(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
  80042f8:	bd80      	pop	{r7, pc}
  80042fa:	bf00      	nop
  80042fc:	08006f04 	.word	0x08006f04
- 8004300:	08006f2c 	.word	0x08006f2c
- 8004304:	08006f30 	.word	0x08006f30
+ 8004300:	08006f18 	.word	0x08006f18
+ 8004304:	08006f1c 	.word	0x08006f1c
  8004308:	08006f00 	.word	0x08006f00
 
 0800430c <cli_register_commands>:
@@ -9918,41 +9918,41 @@ static void cli_register_commands(cli_struct_t *cli) {
  800444e:	3718      	adds	r7, #24
  8004450:	46bd      	mov	sp, r7
  8004452:	bd80      	pop	{r7, pc}
- 8004454:	08006f50 	.word	0x08006f50
+ 8004454:	08006f3c 	.word	0x08006f3c
  8004458:	08000499 	.word	0x08000499
- 800445c:	08006f48 	.word	0x08006f48
- 8004460:	08006f68 	.word	0x08006f68
+ 800445c:	08006f34 	.word	0x08006f34
+ 8004460:	08006f54 	.word	0x08006f54
  8004464:	08000661 	.word	0x08000661
- 8004468:	08006f60 	.word	0x08006f60
- 800446c:	08006f80 	.word	0x08006f80
+ 8004468:	08006f4c 	.word	0x08006f4c
+ 800446c:	08006f6c 	.word	0x08006f6c
  8004470:	080005a1 	.word	0x080005a1
- 8004474:	08006f78 	.word	0x08006f78
- 8004478:	08006f98 	.word	0x08006f98
+ 8004474:	08006f64 	.word	0x08006f64
+ 8004478:	08006f84 	.word	0x08006f84
  800447c:	08000739 	.word	0x08000739
- 8004480:	08006f90 	.word	0x08006f90
- 8004484:	08006fb0 	.word	0x08006fb0
- 8004488:	08006fa8 	.word	0x08006fa8
- 800448c:	08006fc4 	.word	0x08006fc4
+ 8004480:	08006f7c 	.word	0x08006f7c
+ 8004484:	08006f9c 	.word	0x08006f9c
+ 8004488:	08006f94 	.word	0x08006f94
+ 800448c:	08006fb0 	.word	0x08006fb0
  8004490:	08004049 	.word	0x08004049
- 8004494:	08006fbc 	.word	0x08006fbc
- 8004498:	08006fd0 	.word	0x08006fd0
+ 8004494:	08006fa8 	.word	0x08006fa8
+ 8004498:	08006fbc 	.word	0x08006fbc
  800449c:	0800408d 	.word	0x0800408d
- 80044a0:	08006fcc 	.word	0x08006fcc
- 80044a4:	08006ff0 	.word	0x08006ff0
+ 80044a0:	08006fb8 	.word	0x08006fb8
+ 80044a4:	08006fdc 	.word	0x08006fdc
  80044a8:	08004139 	.word	0x08004139
- 80044ac:	08006fe8 	.word	0x08006fe8
- 80044b0:	0800700c 	.word	0x0800700c
+ 80044ac:	08006fd4 	.word	0x08006fd4
+ 80044b0:	08006ff8 	.word	0x08006ff8
  80044b4:	0800415d 	.word	0x0800415d
- 80044b8:	08007004 	.word	0x08007004
- 80044bc:	08007024 	.word	0x08007024
+ 80044b8:	08006ff0 	.word	0x08006ff0
+ 80044bc:	08007010 	.word	0x08007010
  80044c0:	08004195 	.word	0x08004195
- 80044c4:	0800701c 	.word	0x0800701c
- 80044c8:	08007044 	.word	0x08007044
+ 80044c4:	08007008 	.word	0x08007008
+ 80044c8:	08007030 	.word	0x08007030
  80044cc:	080041b5 	.word	0x080041b5
- 80044d0:	08007040 	.word	0x08007040
- 80044d4:	08007068 	.word	0x08007068
+ 80044d0:	0800702c 	.word	0x0800702c
+ 80044d4:	08007054 	.word	0x08007054
  80044d8:	08004261 	.word	0x08004261
- 80044dc:	08007064 	.word	0x08007064
+ 80044dc:	08007050 	.word	0x08007050
 
 080044e0 <stm32_now_sec>:
  *
@@ -11029,7 +11029,7 @@ LoopFillZerobss:
   ldr r1, =_edata
  80049b4:	2000005c 	.word	0x2000005c
   ldr r2, =_sidata
- 80049b8:	080071fc 	.word	0x080071fc
+ 80049b8:	080071e8 	.word	0x080071e8
   ldr r2, =_sbss
  80049bc:	2000005c 	.word	0x2000005c
   ldr r4, =_ebss
@@ -13298,7 +13298,7 @@ if (((RCC_ClkInitStruct->ClockType) & RCC_CLOCKTYPE_PCLK1) == RCC_CLOCKTYPE_PCLK
  8005696:	bf00      	nop
  8005698:	40022000 	.word	0x40022000
  800569c:	40021000 	.word	0x40021000
- 80056a0:	0800708c 	.word	0x0800708c
+ 80056a0:	08007078 	.word	0x08007078
  80056a4:	20000000 	.word	0x20000000
  80056a8:	20000004 	.word	0x20000004
 
@@ -13433,8 +13433,8 @@ uint32_t HAL_RCC_GetSysClockFreq(void)
  800573e:	bf00      	nop
  8005740:	40021000 	.word	0x40021000
  8005744:	007a1200 	.word	0x007a1200
- 8005748:	080070a4 	.word	0x080070a4
- 800574c:	080070b4 	.word	0x080070b4
+ 8005748:	08007090 	.word	0x08007090
+ 800574c:	080070a0 	.word	0x080070a0
  8005750:	003d0900 	.word	0x003d0900
 
 08005754 <HAL_RCC_GetHCLKFreq>:
@@ -13480,7 +13480,7 @@ uint32_t HAL_RCC_GetPCLK1Freq(void)
  8005784:	4618      	mov	r0, r3
  8005786:	bd80      	pop	{r7, pc}
  8005788:	40021000 	.word	0x40021000
- 800578c:	0800709c 	.word	0x0800709c
+ 800578c:	08007088 	.word	0x08007088
 
 08005790 <HAL_RCC_GetPCLK2Freq>:
   * @note   Each time PCLK2 changes, this function must be called to update the
@@ -13506,7 +13506,7 @@ uint32_t HAL_RCC_GetPCLK2Freq(void)
  80057ac:	4618      	mov	r0, r3
  80057ae:	bd80      	pop	{r7, pc}
  80057b0:	40021000 	.word	0x40021000
- 80057b4:	0800709c 	.word	0x0800709c
+ 80057b4:	08007088 	.word	0x08007088
 
 080057b8 <RCC_Delay>:
   * @brief  This function provides delay (in milliseconds) based on CPU cycles method.
@@ -14650,10 +14650,10 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  8005e66:	4798      	blx	r3
  8005e68:	3601      	adds	r6, #1
  8005e6a:	e7f2      	b.n	8005e52 <__libc_init_array+0x1e>
- 8005e6c:	080071f4 	.word	0x080071f4
- 8005e70:	080071f4 	.word	0x080071f4
- 8005e74:	080071f4 	.word	0x080071f4
- 8005e78:	080071f8 	.word	0x080071f8
+ 8005e6c:	080071e0 	.word	0x080071e0
+ 8005e70:	080071e0 	.word	0x080071e0
+ 8005e74:	080071e0 	.word	0x080071e0
+ 8005e78:	080071e4 	.word	0x080071e4
 
 08005e7c <__retarget_lock_acquire_recursive>:
  8005e7c:	4770      	bx	lr
@@ -15173,9 +15173,9 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800631c:	f000 f87e 	bl	800641c <_printf_i>
  8006320:	e7ee      	b.n	8006300 <_svfiprintf_r+0x1b8>
  8006322:	bf00      	nop
- 8006324:	080071b7 	.word	0x080071b7
- 8006328:	080071bd 	.word	0x080071bd
- 800632c:	080071c1 	.word	0x080071c1
+ 8006324:	080071a3 	.word	0x080071a3
+ 8006328:	080071a9 	.word	0x080071a9
+ 800632c:	080071ad 	.word	0x080071ad
  8006330:	00000000 	.word	0x00000000
  8006334:	08006089 	.word	0x08006089
 
@@ -15512,8 +15512,8 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  8006658:	f104 0619 	add.w	r6, r4, #25
  800665c:	e7f5      	b.n	800664a <_printf_i+0x22e>
  800665e:	bf00      	nop
- 8006660:	080071c8 	.word	0x080071c8
- 8006664:	080071d9 	.word	0x080071d9
+ 8006660:	080071b4 	.word	0x080071b4
+ 8006664:	080071c5 	.word	0x080071c5
 
 08006668 <_sbrk_r>:
  8006668:	b538      	push	{r3, r4, r5, lr}

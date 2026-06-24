@@ -2,6 +2,12 @@
 
 Embedded platform demos for [OpenLibCLI](https://github.com/thesourcebuild/OpenLibCLI) — a pure-C99, 100% static-allocation CLI engine for desktop and embedded systems.
 
+## Table of Contents
+
+- [Platforms](#platforms)
+- [Demos](#demos)
+- [License](#license)
+
 ## Platforms
 
 | Platform | Status | Transports | IDE/Framework |
