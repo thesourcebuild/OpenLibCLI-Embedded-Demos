@@ -46,4 +46,4 @@ Placeholder directories for future native (non-Arduino) demos using ESP-IDF and 
 
 ## License
 
-MIT © 2026 Muhammad Hassaan Shah. Third-party SDKs, HAL drivers, CMSIS cores, vendor libraries, and auto-generated files (STM32CubeMX, Arduino cores, etc.) remain property of their respective owners under their own license terms.
+MIT License — see ['LICENSE'](LICENSE) file.
