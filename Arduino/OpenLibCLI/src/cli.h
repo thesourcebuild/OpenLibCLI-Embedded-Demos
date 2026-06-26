@@ -132,15 +132,11 @@ extern "C" {
 #endif
 
 /* Boolean value constants with explicit cast for MISRA compliance. */
-#ifndef CLI_TRUE
-#define CLI_TRUE ((bool)1)
+#ifndef True
+#define True ((bool)1)
 #endif
-#ifndef CLI_FALSE
-#define CLI_FALSE ((bool)0)
-#endif
-
-#ifndef CLI_NPOS
-#define CLI_NPOS ((size_t)-1) /**< @c size_t sentinel meaning "not found" / invalid. */
+#ifndef False
+#define False ((bool)0)
 #endif
 
 /** @brief Sentinel value meaning "invalid command handle" / error. */
@@ -930,7 +926,6 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli);
  * @param[in] enabled  True if terminal supports ANSI, false otherwise.
  */
 OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
-OPENLIBCLI_API void cli_set_echo(cli_struct_t *cli, bool enabled);
 
 /**
  * @brief Set the session hostname string (appears in the prompt).

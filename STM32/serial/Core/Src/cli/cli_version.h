@@ -42,7 +42,7 @@ extern "C" {
 #define CLI_VERSION_MINOR 1
 
 /** @brief Revision / patch number. Incremented on bug-fix releases. */
-#define CLI_VERSION_REVISION 1
+#define CLI_VERSION_REVISION 2
 
 /**
  * @brief Packed version word: 0x00MMmmrr (major, minor, revision).
