@@ -42,8 +42,8 @@
 
 #include <time.h>
 
-#include "../OpenLibCLI/cli_env_detect.h"
-#include "../OpenLibCLI/cli.h"
+#include "cli_env_detect.h"
+#include "cli.h"
 
 /*=======================================================================================
  * Private Defines
@@ -69,6 +69,9 @@
 #define ASCII_CAP_O     0x4F        /**< 'O' capital letter. */
 #define ASCII_DIGIT_0   0x30        /**< '0' digit zero. */
 #define ASCII_DIGIT_9   0x39        /**< '9' digit nine. */
+
+#define CLI_CRLF     "\r\n"
+#define CLI_ANSI_CLS "\x1b[2J\x1b[H"
 
 /*=======================================================================================
  * Private Macros
@@ -108,6 +111,19 @@
 #define CLI_WSTR(cli, s)        cli_write_str((cli), (s))
 #define CLI_REGCPY(dst, src, n) cli_strlcpy((dst), (src), (n))
 #endif
+
+/**
+ * @brief Write a plain string literal followed by a newline, avoiding
+ *        vsnprintf overhead and (on AVR) keeping the string in flash.
+ *
+ * @param[in] cli  Active CLI session.
+ * @param[in] s    String literal to write.
+ */
+#define CLI_PRINTLN_STR(cli, s)                                                                    \
+  do {                                                                                             \
+    CLI_WSTR((cli), (s));                                                                          \
+    CLI_WSTR((cli), CLI_CRLF);                                                                     \
+  } while (0)
 
 #define CLI_CMD_IS_IN_USE(cmd_)  ((((cmd_)->flags) & CLI_CMD_FLAG_IN_USE) != 0U)
 #define CLI_CMD_IS_HIDDEN(cmd_)  ((((cmd_)->flags) & CLI_CMD_FLAG_HIDDEN) != 0U)
@@ -182,6 +198,8 @@ static size_t cli_strlcpy_P(char *dst, const char *src_P, size_t size);
 
 static size_t cli_strlcpy(char *dst, const char *src, size_t size);
 static bool cli_case_prefix_match(const char *str, const char *prefix);
+static inline char *cli_skip_spaces(char *p);
+static inline char *cli_skip_non_spaces(char *p);
 
 /* Prompt Construction and Display ------------------------------------------------------*/
 
@@ -503,7 +521,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_history(cli_struct_t *cli, const char *cmd
   int8_t rc = CLI_OK;
 
   if (cli->history_count == 0) {
-    (void)cli_println(cli, "%s", "History is empty.");
+    CLI_PRINTLN_STR(cli, "History is empty.");
   } else {
 #if CLI_HISTORY_INDEX_SELECTION
     if (argc > 1) {
@@ -564,7 +582,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
   }
 
   if (rc == CLI_OK) {
-    bool any = (bool)false;
+    bool any = False;
     cli_foreach_match(cli, "", parent, cli_print_help_cb, &any);
     if (!any) {
       CLI_WSTR(cli, "  <cr>\r\n");
@@ -588,7 +606,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_clear_screen(cli_struct_t *cli, const char
                   "[2J\x1b"
                   "[H");
   } else {
-    (void)cli_println(cli, "%s", "Clear not supported on Non-ANSI/VT100 Terminals");
+    CLI_PRINTLN_STR(cli, "Clear not supported on Non-ANSI/VT100 Terminals");
   }
 
   return rc;
@@ -600,7 +618,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_usage(cli_struct_t *cli, const char *cmd, 
   (void)argc;
   (void)argv;
 
-  (void)cli_println(cli, "%s", "Usage information. Type 'commands' or 'keys' for details.");
+  CLI_PRINTLN_STR(cli, "Usage information. Type 'commands' or 'keys' for details.");
   return CLI_OK;
 }
 
@@ -612,16 +630,16 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_usage_commands(cli_struct_t *cli, const ch
 
   int8_t rc = CLI_OK;
 
-  (void)cli_println(cli, "%s", "Common usage:");
-  (void)cli_println(cli, "%s", "  ?                 Inline context help");
-  (void)cli_println(cli, "%s", "  help              List top-level commands");
-  (void)cli_println(cli, "%s", "  help show         List subcommands under help");
-  (void)cli_println(cli, "%s", "  show ?            Show show subcommands");
-  (void)cli_println(cli, "%s", "  history           Command history");
+  CLI_PRINTLN_STR(cli, "Common usage:");
+  CLI_PRINTLN_STR(cli, "  ?                 Inline context help");
+  CLI_PRINTLN_STR(cli, "  help              List top-level commands");
+  CLI_PRINTLN_STR(cli, "  help show         List subcommands under help");
+  CLI_PRINTLN_STR(cli, "  show ?            Show show subcommands");
+  CLI_PRINTLN_STR(cli, "  history           Command history");
 #if ENV_IS_OS_ENVIRONMENT
-  (void)cli_println(cli, "%s", "  clear / cls       Clear screen");
+  CLI_PRINTLN_STR(cli, "  clear / cls       Clear screen");
 #endif
-  (void)cli_println(cli, "%s", "  usage keys        Key shortcuts");
+  CLI_PRINTLN_STR(cli, "  usage keys        Key shortcuts");
 
   return rc;
 }
@@ -634,14 +652,14 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_usage_keys(cli_struct_t *cli, const char *
 
   int8_t rc = CLI_OK;
 
-  (void)cli_println(cli, "%s", "Line editing shortcuts:");
-  (void)cli_println(cli, "%s", "  Tab      autocomplete");
-  (void)cli_println(cli, "%s", "  Ctrl-P/N history prev/next");
-  (void)cli_println(cli, "%s", "  Ctrl-A/E line start/end");
-  (void)cli_println(cli, "%s", "  Ctrl-B/F cursor left/right");
-  (void)cli_println(cli, "%s", "  Ctrl-U   clear line");
-  (void)cli_println(cli, "%s", "  Ctrl-W   delete prev word");
-  (void)cli_println(cli, "%s", "  Ctrl-K   delete to EOL");
+  CLI_PRINTLN_STR(cli, "Line editing shortcuts:");
+  CLI_PRINTLN_STR(cli, "  Tab      autocomplete");
+  CLI_PRINTLN_STR(cli, "  Ctrl-P/N history prev/next");
+  CLI_PRINTLN_STR(cli, "  Ctrl-A/E line start/end");
+  CLI_PRINTLN_STR(cli, "  Ctrl-B/F cursor left/right");
+  CLI_PRINTLN_STR(cli, "  Ctrl-U   clear line");
+  CLI_PRINTLN_STR(cli, "  Ctrl-W   delete prev word");
+  CLI_PRINTLN_STR(cli, "  Ctrl-K   delete to EOL");
   return rc;
 }
 
@@ -660,21 +678,21 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
   uint32_t t0 = cli->micros_source ? cli->micros_source(cli->micros_source_ctx) : 0U;
 #endif
   int8_t result = CLI_OK;
-  bool active = (bool)true;
+  bool active = True;
 
   // cli_println(cli, "DEBUG::%d %d\n", active, cli->session_state);
 
   if (cli->session_state == CLI_SESSION_STOP) {
     result = CLI_ERR_QUIT;
-    active = (bool)false;
+    active = False;
   } else if (cli->session_state == CLI_SESSION_INIT) {
     cli->session_state = CLI_SESSION_SHOW_BANNER;
   } else if (cli->session_state == CLI_SESSION_SHOW_BANNER) {
 #if CLI_ENABLE_BANNER
     if (cli->banner[0] != '\0') {
-      CLI_WSTR(cli, "\r\n");
+      CLI_WSTR(cli, CLI_CRLF);
       cli_write_str(cli, cli->banner);
-      CLI_WSTR(cli, "\r\n");
+      CLI_WSTR(cli, CLI_CRLF);
     }
 #endif
 
@@ -703,7 +721,7 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
         if (rr != CLI_OK) {
           cli->session_state = CLI_SESSION_STOP;
           result = rr;
-          active = (bool)false;
+          active = False;
         }
       }
     }
@@ -715,7 +733,7 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
       if (timeout_rc != CLI_OK) {
         cli->session_state = CLI_SESSION_STOP;
         result = timeout_rc;
-        active = (bool)false;
+        active = False;
       }
     }
 #endif
@@ -728,7 +746,7 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
         cli_auth_reset_work(cli);
         cli_auth_prompt_username(cli);
       } else {
-        active = (bool)false;
+        active = False;
       }
     }
 #endif
@@ -737,20 +755,20 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
       cli_transport_ret_t b;
       cli_transport_ret_t available_rc = CLI_ERR;
       int8_t rc;
-      bool keep_going = (bool)true;
+      bool keep_going = True;
 
       // cli_println(cli, "DEBUG: I am running...");
       while (keep_going) {
         available_rc = cli->transport.available(cli->transport.ctx);
         if (available_rc <= 0) {
-          keep_going = (bool)false;
+          keep_going = False;
         } else {
           b = cli->transport.read(cli->transport.ctx);
           if (b < 0) {
             cli->session_state = CLI_SESSION_STOP;
             result = CLI_ERR;
-            active = (bool)false;
-            keep_going = (bool)false;
+            active = False;
+            keep_going = False;
           } else {
             // cli_println(cli, "DEBUG: T bytes read:%d", read_rc);
             cli_touch_activity_internal(cli);
@@ -766,8 +784,8 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
             if (rc != CLI_OK) {
               cli->session_state = CLI_SESSION_STOP;
               result = rc;
-              active = (bool)false;
-              keep_going = (bool)false;
+              active = False;
+              keep_going = False;
             }
           }
         }
@@ -850,7 +868,7 @@ OPENLIBCLI_API void cli_init(cli_struct_t *cli, const char *hostname,
   cli->mode_prev = CLI_MODE_EXEC;
   cli->mode_login = CLI_MODE_EXEC;
   cli->privilege = CLI_PRIV_USER;
-  cli->ansi_supported = (bool)true;
+  cli->ansi_supported = True;
   cli->transport = *transport;
 #if CLI_ENABLE_TIME_SOURCE
   if (platform && platform->now_sec) {
@@ -938,7 +956,7 @@ OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
     cli->context = CLI_CMD_ROOT;
     cli->esc_state = ESC_STATE_NORMAL;
     cli->esc_param = 0;
-    cli->saw_cr = (bool)false;
+    cli->saw_cr = False;
     cli_reset_input(cli);
 #if CLI_ENABLE_AUTH
     cli->auth_state = CLI_AUTH_NONE;
@@ -1122,28 +1140,28 @@ OPENLIBCLI_API int8_t cli_clear_history(cli_struct_t *cli) {
 #endif /* CLI_ENABLE_HISTORY */
 
 OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli) {
-  bool check_timeout = (bool)false;
+  bool check_timeout = False;
   int8_t rc = CLI_OK;
 
 #if CLI_ENABLE_IDLE_TIMEOUT
   if (cli != NULL && cli->idle_timeout != 0UL && cli->time_source != NULL) {
-    check_timeout = (bool)true;
+    check_timeout = True;
 
     if (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_IGNORE) {
-      check_timeout = (bool)false;
+      check_timeout = False;
     }
 
 #if CLI_ENABLE_AUTH
     /* In no-auth flow, RESET_SESSION behaves as IGNORE. */
     if (check_timeout && cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION &&
         !cli->require_auth) {
-      check_timeout = (bool)false;
+      check_timeout = False;
     }
 
     /* In auth flow, avoid repeated reset while waiting at login prompts. */
     if (check_timeout && cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION &&
         cli->auth_state != CLI_AUTH_AUTHENTICATED) {
-      check_timeout = (bool)false;
+      check_timeout = False;
     }
 #endif
 
@@ -1358,14 +1376,14 @@ OPENLIBCLI_API int8_t cli_remove_command_recursive(cli_struct_t *cli, cli_cmd_ha
       handle < cli->cmd_pool_size) {
     const cli_cmd_struct_t *cmd = &cli->cmd_pool[handle];
     if (CLI_CMD_IS_IN_USE(cmd)) {
-      bool removed_child = (bool)true;
+      bool removed_child = True;
 
       while (removed_child) {
-        removed_child = (bool)false;
+        removed_child = False;
         for (cli_poolsize_t i = 0; i < cli->cmd_pool_size; i++) {
           if (CLI_CMD_IS_IN_USE(&cli->cmd_pool[i]) && cli->cmd_pool[i].parent == handle) {
             (void)cli_remove_command_recursive(cli, i);
-            removed_child = (bool)true;
+            removed_child = True;
             break;
           }
         }
@@ -1621,7 +1639,7 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...) {
       } else {
         cli_write_str(cli, "\r\n% ");
         cli_write_str(cli, buf);
-        cli_write_str(cli, "\r\n");
+        cli_write_str(cli, CLI_CRLF);
       }
       rc = (int)strlen(buf);
     }
@@ -1712,11 +1730,11 @@ static size_t cli_strlcpy(char *dst, const char *src, size_t size) {
 }
 
 static bool cli_case_prefix_match(const char *str, const char *prefix) {
-  bool match = (bool)true;
+  bool match = True;
 
   while (*prefix != '\0' && match) {
     if (tolower((int)(unsigned char)*str) != tolower((int)(unsigned char)*prefix)) {
-      match = (bool)false;
+      match = False;
     } else {
       str++;
       prefix++;
@@ -1724,6 +1742,40 @@ static bool cli_case_prefix_match(const char *str, const char *prefix) {
   }
 
   return match;
+}
+
+/**
+ * @brief Skip leading whitespace characters (space, tab).
+ *
+ * Advances @p p past any consecutive @c ' ' and @c '\\t' characters.
+ *
+ * @param[in] p  Pointer to the start of a string.
+ *
+ * @return Pointer to the first non-whitespace character (or the NUL
+ *         terminator if the string is all whitespace).
+ */
+static inline char *cli_skip_spaces(char *p) {
+  while (*p == ' ' || *p == '\t') {
+    p++;
+  }
+  return p;
+}
+
+/**
+ * @brief Skip non-whitespace characters (the inverse of @c cli_skip_spaces).
+ *
+ * Advances @p p past any characters that are neither @c ' ' nor @c '\\t',
+ * stopping at the first whitespace or NUL terminator.
+ *
+ * @param[in] p  Pointer to the start of a token.
+ *
+ * @return Pointer to the first whitespace or NUL after the token.
+ */
+static inline char *cli_skip_non_spaces(char *p) {
+  while (*p != '\0' && *p != ' ' && *p != '\t') {
+    p++;
+  }
+  return p;
 }
 
 /* Raw I/O Primitives -------------------------------------------------------------------*/
@@ -1877,11 +1929,11 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli) {
  */
 #if CLI_ENABLE_PIPE_FILTER
 static void cli_print_emit(cli_struct_t *cli, const char *line) {
-  bool emit = (bool)true;
+  bool emit = True;
 
 #if CLI_ENABLE_PIPE_FILTER
   if (!cli_filter_line(cli, line)) {
-    emit = (bool)false;
+    emit = False;
   }
 #endif
 
@@ -1890,7 +1942,7 @@ static void cli_print_emit(cli_struct_t *cli, const char *line) {
       cli->print_transport_cb(cli, line);
     } else {
       cli_write_str(cli, line);
-      cli_write_str(cli, "\r\n");
+      cli_write_str(cli, CLI_CRLF);
     }
   }
 }
@@ -1931,7 +1983,7 @@ static void cli_print_process_stream(cli_struct_t *cli, const char *data, int le
     char c = data[i];
 
     if (c == '\n') {
-      cli_write_str(cli, "\r\n");
+      cli_write_str(cli, CLI_CRLF);
     } else if (c != '\r') {
       cli_write_char(cli, c);
     } else {
@@ -2201,7 +2253,7 @@ static void cli_show_prompt(cli_struct_t *cli) {
     char prompt[CLI_MAX_PROMPT_LEN + 8];
 #endif
     size_t pos = 0;
-    bool emitted = (bool)false;
+    bool emitted = False;
 
     if (cli->context != CLI_CMD_ROOT) {
       cli_cmd_handle_t cur = cli->context;
@@ -2212,7 +2264,7 @@ static void cli_show_prompt(cli_struct_t *cli) {
         prompt[pos] = '\0';
         cli_write_str(cli, prompt);
         cli_flush(cli);
-        emitted = (bool)true;
+        emitted = True;
       }
     }
 
@@ -2260,7 +2312,7 @@ static void cli_history_add(cli_struct_t *cli, const char *line) {
     cli_history_idx_t prev =
         (cli_history_idx_t)((cli->history_head + CLI_MAX_HISTORY - 1) % CLI_MAX_HISTORY);
     if (strcmp(line, &cli->history_buf[cli->history_off[prev]]) == 0) {
-      add = (bool)false;
+      add = False;
     }
   }
 
@@ -2348,7 +2400,7 @@ static void cli_history_clear_displayed_input(cli_struct_t *cli) {
  *                 @c CLI_HISTORY_NAV_NEXT.
  */
 static void cli_history_navigate(cli_struct_t *cli, cli_history_nav_dir_enum_t dir) {
-  bool can_navigate = (bool)true;
+  bool can_navigate = True;
 
   if (dir == CLI_HISTORY_NAV_PREV) {
 #if CLI_HISTORY_RESTORE_PREBROWSE_LINE
@@ -2358,13 +2410,13 @@ static void cli_history_navigate(cli_struct_t *cli, cli_history_nav_dir_enum_t d
     }
 #endif
     if (cli->history_nav >= cli->history_count) {
-      can_navigate = (bool)false;
+      can_navigate = False;
     } else {
       cli->history_nav++;
     }
   } else {
     if (cli->history_nav == 0) {
-      can_navigate = (bool)false;
+      can_navigate = False;
     } else {
       cli->history_nav--;
     }
@@ -2409,16 +2461,12 @@ static cli_argc_t cli_tokenize(char *buf, const char *argv[], cli_argc_t max_arg
   char *p = buf;
 
   while (*p != '\0' && argc < max_args - 1) {
-    while (*p == ' ' || *p == '\t') {
-      p++;
-    }
+    p = cli_skip_spaces(p);
     if (*p == '\0') {
       break;
     }
     argv[argc++] = p;
-    while (*p != '\0' && *p != ' ' && *p != '\t') {
-      p++;
-    }
+    p = cli_skip_non_spaces(p);
     if (*p != '\0') {
       *p++ = '\0';
     }
@@ -2442,7 +2490,7 @@ static cli_argc_t cli_tokenize(char *buf, const char *argv[], cli_argc_t max_arg
  * @return Always @c true (continue iteration).
  */
 static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, bool *any) {
-  *any = (bool)true;
+  *any = True;
   const cli_cmd_struct_t *cmd = &cli->cmd_pool[h];
 #if CLI_ENABLE_COMMAND_HELP
   char line[CLI_MAX_NAME_LEN + CLI_MAX_HELP_LEN + 4];
@@ -2462,8 +2510,8 @@ static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, bool *any) 
 #endif
   line[pos] = '\0';
   cli_write_str(cli, line);
-  CLI_WSTR(cli, "\r\n");
-  return true;
+  CLI_WSTR(cli, CLI_CRLF);
+  return True;
 }
 
 /**
@@ -2589,7 +2637,7 @@ static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handl
  * @return @c true when at least one match exists, otherwise @c false.
  */
 static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent) {
-  bool found = (bool)false;
+  bool found = False;
   for (cli_poolsize_t i = 0; i < cli->cmd_pool_size && !found; i++) {
     const cli_cmd_struct_t *cmd = &cli->cmd_pool[i];
     if (!CLI_CMD_IS_IN_USE(cmd) || cmd->parent != parent || CLI_CMD_IS_HIDDEN(cmd) ||
@@ -2600,13 +2648,13 @@ static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handl
       continue;
     }
     if (cli_case_prefix_match(cmd->name, word)) {
-      found = (bool)true;
+      found = True;
     }
 #if CLI_ENABLE_ALIASES
     if (!found) {
       for (cli_len_t a = 0; a < cmd->num_aliases && !found; a++) {
         if (cli_case_prefix_match(cmd->aliases[a], word)) {
-          found = (bool)true;
+          found = True;
         }
       }
     }
@@ -2623,11 +2671,11 @@ static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handl
  * @return @c true when a direct child exists, otherwise @c false.
  */
 static bool cli_cmd_has_children(cli_struct_t *cli, cli_cmd_handle_t parent) {
-  bool has_children = (bool)false;
+  bool has_children = False;
 
   for (cli_poolsize_t i = 0; i < cli->cmd_pool_size; i++) {
     if (CLI_CMD_IS_IN_USE(&cli->cmd_pool[i]) && cli->cmd_pool[i].parent == parent) {
-      has_children = (bool)true;
+      has_children = True;
       break;
     }
   }
@@ -2711,7 +2759,7 @@ static void cli_tab_complete(cli_struct_t *cli) {
 
   const char *argv[CLI_MAX_ARGS];
   cli_argc_t argc = cli_tokenize(scratch, argv, CLI_MAX_ARGS);
-  bool done = (bool)false;
+  bool done = False;
 
   /* Determine if last char is a space (completing next word) */
   bool trailing_space = (cli->input_len > 0 && cli->input[cli->input_len - 1] == ' ');
@@ -2726,7 +2774,7 @@ static void cli_tab_complete(cli_struct_t *cli) {
     int8_t r = cli_resolve_one(cli, argv[d], parent, &h);
     if (r != CLI_OK) {
       cli_write_char(cli, '\a');
-      done = (bool)true;
+      done = True;
       break;
     }
     parent = h;
@@ -2777,7 +2825,7 @@ static void cli_tab_complete(cli_struct_t *cli) {
 
     if (count == 0) {
       cli_write_char(cli, '\a');
-      done = (bool)true;
+      done = True;
     } else if (count == 1) {
       /* Unique match — complete the word */
       const char *full = cli->cmd_pool[first].name;
@@ -2800,7 +2848,7 @@ static void cli_tab_complete(cli_struct_t *cli) {
         i++;
       }
       cli_insert_char(cli, ' ');
-      done = (bool)true;
+      done = True;
     } else {
       /* To silence MISRA */
     }
@@ -2811,13 +2859,13 @@ static void cli_tab_complete(cli_struct_t *cli) {
       for (cli_len_t i = partial_len; i < common; i++) {
         cli_insert_char(cli, full[i]);
       }
-      done = (bool)true;
+      done = True;
     }
 
     if (!done) {
       /* Pass 2: print all matches */
-      bool dummy = (bool)false;
-      CLI_WSTR(cli, "\r\n");
+      bool dummy = False;
+      CLI_WSTR(cli, CLI_CRLF);
       cli_foreach_match(cli, partial, parent, cli_print_help_cb, &dummy);
       cli_redraw_line(cli);
     }
@@ -2853,7 +2901,7 @@ static void cli_show_help(cli_struct_t *cli) {
   bool trailing_space = (len > 0 && scratch[len - 1] == ' ');
   const char *partial = (argc > 0 && !trailing_space) ? argv[argc - 1] : "";
   int depth = (trailing_space) ? argc : ((argc > 0) ? argc - 1 : 0);
-  bool show = (bool)true;
+  bool show = True;
 
   cli_cmd_handle_t parent = cli_menu_context_parent(cli);
   cli_cmd_handle_t h;
@@ -2863,11 +2911,11 @@ static void cli_show_help(cli_struct_t *cli) {
       if (r == CLI_ERR) {
         CLI_WSTR(cli, "\r\n% Unknown command.\r\n");
         cli_redraw_line(cli);
-        show = (bool)false;
+        show = False;
       } else {
         CLI_WSTR(cli, "\r\n% Ambiguous command.\r\n");
         cli_redraw_line(cli);
-        show = (bool)false;
+        show = False;
       }
       break;
     }
@@ -2882,8 +2930,8 @@ static void cli_show_help(cli_struct_t *cli) {
       }
     }
 
-    bool any = (bool)false;
-    CLI_WSTR(cli, "\r\n");
+    bool any = False;
+    CLI_WSTR(cli, CLI_CRLF);
     cli_foreach_match(cli, partial, parent, cli_print_help_cb, &any);
     if (!any) {
       CLI_WSTR(cli, "  <cr>\r\n");
@@ -2903,7 +2951,7 @@ static void cli_filter_reset(cli_struct_t *cli) {
   cli->filter_type = CLI_FILTER_NONE;
   cli->filter_pattern[0] = '\0';
   cli->filter_count = 0;
-  cli->filter_begin_found = (bool)false;
+  cli->filter_begin_found = False;
   cli->filter_line_buf_len = 0;
 }
 
@@ -2917,7 +2965,7 @@ static void cli_filter_reset(cli_struct_t *cli) {
  * suppressed.
  */
 static bool cli_filter_line(cli_struct_t *cli, const char *line) {
-  bool result = (bool)true;
+  bool result = True;
 
   switch (cli->filter_type) {
   case CLI_FILTER_NONE:
@@ -2934,15 +2982,15 @@ static bool cli_filter_line(cli_struct_t *cli, const char *line) {
   case CLI_FILTER_BEGIN:
     if (cli->filter_begin_found) {
     } else if (strstr(line, cli->filter_pattern) != NULL) {
-      cli->filter_begin_found = (bool)true;
+      cli->filter_begin_found = True;
     } else {
-      result = (bool)false;
+      result = False;
     }
     break;
 
   case CLI_FILTER_COUNT:
     cli->filter_count++;
-    result = (bool)false; /* accumulate, print in flush */
+    result = False; /* accumulate, print in flush */
     break;
 
   default:
@@ -3054,22 +3102,22 @@ static ptrdiff_t cli_parse_filter(cli_struct_t *cli, const char *line) {
  */
 static int8_t cli_feed(cli_struct_t *cli, int byte) {
   int8_t rc = CLI_ERR;
-  bool printable = (bool)false;
+  bool printable = False;
 
   if (cli != NULL && cli->session_state != CLI_SESSION_STOP) {
     cli_touch_activity_internal(cli);
     rc = CLI_OK;
 
     if (cli->saw_cr && byte == ASCII_LF) {
-      cli->saw_cr = (bool)false;
+      cli->saw_cr = False;
     } else {
       cli->saw_cr = (bool)(byte == ASCII_CR);
 
-      cli->suppress_help_newline = (bool)false;
+      cli->suppress_help_newline = False;
 
       /* Escape / CSI sequences */
       bool esc_processed = cli_process_escape(cli, byte);
-      if (!(cli->esc_state != ESC_STATE_NORMAL || byte == 0x1B) || !esc_processed) {
+      if (!esc_processed) {
         /* Control characters */
         switch (byte) {
         /* Enter */
@@ -3144,7 +3192,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
         case 0x04:
           if (cli->input_len == 0) {
             /* EOF on empty line -> quit */
-            CLI_WSTR(cli, "\r\n");
+            CLI_WSTR(cli, CLI_CRLF);
             cli->session_state = CLI_SESSION_STOP;
             rc = CLI_ERR_QUIT;
           } else {
@@ -3175,7 +3223,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
         /* Ignore other control characters */
         default:
           if (byte >= 0x20 && byte <= 0x7E) {
-            printable = (bool)true;
+            printable = True;
           }
           break;
         }
@@ -3198,7 +3246,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
               }
               cli_show_help(cli);
             }
-            cli->suppress_help_newline = (bool)true;
+            cli->suppress_help_newline = True;
           } else {
             /* Printable character — insert at cursor */
             cli_insert_char(cli, (char)byte);
@@ -3228,7 +3276,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
 static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc,
                                   cli_argc_t depth, cli_cmd_handle_t parent) {
   int8_t rc = CLI_ERR;
-  bool done = (bool)false;
+  bool done = False;
 
   for (; depth < argc && !done; depth++) {
     cli_cmd_handle_t h;
@@ -3237,14 +3285,14 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
     if (r == CLI_ERR) {
       CLI_WSTR(cli, "% Unknown command: ");
       cli_write_str(cli, argv[depth]);
-      CLI_WSTR(cli, "\r\n");
-      done = (bool)true;
+      CLI_WSTR(cli, CLI_CRLF);
+      done = True;
     } else if (r == CLI_ERR_AMBIG) {
       CLI_WSTR(cli, "% Ambiguous command: ");
       cli_write_str(cli, argv[depth]);
-      CLI_WSTR(cli, "\r\n");
+      CLI_WSTR(cli, CLI_CRLF);
       rc = CLI_ERR_AMBIG;
-      done = (bool)true;
+      done = True;
     } else {
       // --- Execution Path ---
       const cli_cmd_struct_t *cmd = &cli->cmd_pool[h];
@@ -3266,7 +3314,7 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
         } else {
           CLI_WSTR(cli, "% Incomplete command.\r\n");
         }
-        done = (bool)true;
+        done = True;
       }
     }
   }
@@ -3297,10 +3345,7 @@ static int8_t cli_execute(cli_struct_t *cli) {
   int8_t rc = CLI_OK;
 
   /* Trim leading/trailing whitespace */
-  char *start = cli->input;
-  while (*start == ' ' || *start == '\t') {
-    start++;
-  }
+  char *start = cli_skip_spaces(cli->input);
 
   cli_len_t slen = (cli_len_t)strlen(start);
   while (slen > 0 && (start[slen - 1] == ' ' || start[slen - 1] == '\t')) {
@@ -3387,7 +3432,7 @@ static void cli_auth_prompt_username(cli_struct_t *cli) {
  * @return @c true if the lockout has expired or is not active.
  */
 static bool cli_auth_lockout_expired(const cli_struct_t *cli) {
-  bool expired = (bool)true;
+  bool expired = True;
 
   if (cli != NULL) {
 #if CLI_ENABLE_TIME_SOURCE
@@ -3542,17 +3587,17 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli) {
 
 static int8_t cli_auth_handle(cli_struct_t *cli, int byte) {
   int8_t rc = CLI_OK;
-  bool done = (bool)false;
+  bool done = False;
 
   if (cli->saw_cr && byte == ASCII_LF) {
-    cli->saw_cr = (bool)false;
-    done = (bool)true;
+    cli->saw_cr = False;
+    done = True;
   } else {
     cli->saw_cr = (bool)(byte == ASCII_CR);
 
     if (cli->esc_state != ESC_STATE_NORMAL || byte == 0x1B) {
       (void)cli_process_escape(cli, byte);
-      done = (bool)true;
+      done = True;
     }
   }
 
@@ -3674,21 +3719,21 @@ static void cli_auth_insert_char(cli_struct_t *cli, char c) {
  * @return 1 if the byte was consumed by the escape machine, 0 if not.
  */
 static bool cli_process_escape(cli_struct_t *cli, int b) {
-  bool consumed = (bool)false;
+  bool consumed = False;
 
   switch (cli->esc_state) {
   case ESC_STATE_NORMAL:
     if (b == ASCII_ESC) {
       cli->esc_state = ESC_STATE_ESC;
       cli->esc_param = 0;
-      consumed = (bool)true; /* consumed */
+      consumed = True; /* consumed */
     }
     break; /* not an escape byte */
 
   case ESC_STATE_ESC:
     if (b == ASCII_LSBRACKET || b == ASCII_CAP_O) {
       cli->esc_state = ESC_STATE_CSI;
-      consumed = (bool)true;
+      consumed = True;
     } else {
       cli->esc_state = ESC_STATE_NORMAL;
     }
@@ -3697,10 +3742,10 @@ static bool cli_process_escape(cli_struct_t *cli, int b) {
   case ESC_STATE_CSI:
     if (b >= ASCII_DIGIT_0 && b <= ASCII_DIGIT_9) {
       cli->esc_param = cli->esc_param * 10 + (b - ASCII_DIGIT_0);
-      consumed = (bool)true;
+      consumed = True;
     } else {
       handle_csi(cli, (char)b);
-      consumed = (bool)true;
+      consumed = True;
     }
     break;
 

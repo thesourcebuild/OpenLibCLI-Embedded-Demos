@@ -28,6 +28,7 @@
 # ---- Keil MDK-ARM build output ---------------------------------------------
 **/MDK-ARM/OpenLibCLI/
 *.scvd
+OpenLibCLI.uvguix.PC
 
 # ---- STM32CubeIDE / Eclipse -------------------------------------------------
 STM32/.metadata/

@@ -3,7 +3,7 @@
  * @brief Version information for the OpenLibCLI Library.
  *
  * AUTO-GENERATED — do not edit manually.
- * Source: version file
+ * Source: version file + git describe
  *
  * Defines the library version as individual numeric components, as a packed
  * 32-bit word, and as a human-readable string.
@@ -42,7 +42,7 @@ extern "C" {
 #define CLI_VERSION_MINOR 1
 
 /** @brief Revision / patch number. Incremented on bug-fix releases. */
-#define CLI_VERSION_REVISION 0
+#define CLI_VERSION_REVISION 3
 
 /**
  * @brief Packed version word: 0x00MMmmrr (major, minor, revision).
@@ -77,7 +77,7 @@ extern "C" {
 #define CLI_VERSION_XSTR(v) CLI_VERSION_STR(v)
 
 /**
- * @brief Human-readable version string, for example @c "0.1.0".
+ * @brief Human-readable version string, for example @c "85c5f35-dirty".
  *
  * Built from the individual numeric components via the stringify helpers.
  */

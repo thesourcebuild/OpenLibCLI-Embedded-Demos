@@ -3117,7 +3117,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
 
       /* Escape / CSI sequences */
       bool esc_processed = cli_process_escape(cli, byte);
-      if (!(cli->esc_state != ESC_STATE_NORMAL || byte == 0x1B) || !esc_processed) {
+      if (!esc_processed) {
         /* Control characters */
         switch (byte) {
         /* Enter */

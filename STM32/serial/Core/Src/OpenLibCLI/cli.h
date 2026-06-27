@@ -93,16 +93,16 @@ extern "C" {
 #ifdef CLI_CONFIG_HEADER_PATH
 #include CLI_CONFIG_HEADER_PATH
 #else
-#include "../OpenLibCLI/config/cli_config.h"
+#include "cli_config.h"
 #endif
 #elif defined(__has_include)
 #if __has_include("cli_config.h")
-#include "../OpenLibCLI/config/cli_config.h"
+#include "cli_config.h"
 #else
-#include "../OpenLibCLI/config/cli_config.h"
+#include "config/cli_config.h"
 #endif
 #else
-#include "../OpenLibCLI/config/cli_config.h"
+#include "config/cli_config.h"
 // #pragma message("cli_config: config/cli_config.h (legacy fallback)")
 #endif
 
@@ -110,7 +110,7 @@ extern "C" {
 #include <avr/pgmspace.h>
 #endif
 
-#include "../OpenLibCLI/cli_env_detect.h"
+#include "cli_env_detect.h"
 
 /*=======================================================================================
  * Public Defines
@@ -131,8 +131,12 @@ extern "C" {
 #define OPENLIBCLI_API
 #endif
 
-#ifndef CLI_NPOS
-#define CLI_NPOS ((size_t)-1) /**< @c size_t sentinel meaning "not found" / invalid. */
+/* Boolean value constants with explicit cast for MISRA compliance. */
+#ifndef True
+#define True ((bool)1)
+#endif
+#ifndef False
+#define False ((bool)0)
 #endif
 
 /** @brief Sentinel value meaning "invalid command handle" / error. */
@@ -922,7 +926,6 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli);
  * @param[in] enabled  True if terminal supports ANSI, false otherwise.
  */
 OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
-OPENLIBCLI_API void cli_set_echo(cli_struct_t *cli, bool enabled);
 
 /**
  * @brief Set the session hostname string (appears in the prompt).
