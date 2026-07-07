@@ -8,7 +8,7 @@ Embedded platform demos for [OpenLibCLI](https://github.com/thesourcebuild/OpenL
 - [Demos](#demos)
 - [License](#license)
 
-## Platforms
+## Examples
 
 | Platform | Status | Transports | IDE/Framework |
 |---|---|---|---|
