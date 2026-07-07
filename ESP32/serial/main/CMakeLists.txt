@@ -1,0 +1,10 @@
+idf_component_register(SRCS "main.c"
+                            "cli_demo_setup.c"
+                            "cli_transport_serial.c"
+                            "OpenLibCLI/cli.c"
+                            "OpenLibCLI/utils/cli_args_parse.c"
+                    INCLUDE_DIRS "."
+                            "OpenLibCLI"
+                            "OpenLibCLI/config"
+                            "OpenLibCLI/utils"
+                    REQUIRES esp_driver_uart esp_driver_gpio esp_timer)

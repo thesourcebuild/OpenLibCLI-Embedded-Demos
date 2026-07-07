@@ -1,0 +1,10 @@
+menu "OpenLibCLI Telnet Demo Configuration"
+
+    config CLI_LED_GPIO
+        int "Built-in LED GPIO number"
+        default 2
+        range 0 48
+        help
+            Override the auto-detected built-in LED GPIO pin.
+            Defaults: ESP32→2, ESP32-C3/C6/H2→8, ESP32-S3→48.
+endmenu

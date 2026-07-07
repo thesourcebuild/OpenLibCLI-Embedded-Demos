@@ -1,0 +1,11 @@
+menu "OpenLibCLI Serial Demo Configuration"
+
+    config CLI_LED_GPIO
+        int "Built-in LED GPIO number"
+        range 0 48
+        default 2
+        help
+            GPIO number for the built-in LED.
+            Common values: ESP32 DevKitC=2, ESP32-C3=8, ESP32-S3=48.
+
+endmenu

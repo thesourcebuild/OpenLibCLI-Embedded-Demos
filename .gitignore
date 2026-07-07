@@ -1,0 +1,65 @@
+# =============================================================================
+#  OpenLibCLI Embedded Demos — .gitignore
+# =============================================================================
+
+# ---- Build artifacts --------------------------------------------------------
+*.o
+*.crf
+*.d
+*.axf
+*.elf
+*.out
+*.hex
+*.bin
+*.s19
+*.map
+*.lst
+*.lnp
+*.sct
+*.dep
+*.htm
+*.build_log.htm
+
+
+# ---- IAR EWARM build output -------------------------------------------------
+# Project files (.ewp, .ewd, .eww, .ewt) and source at root of EWARM/ are tracked
+**/EWARM/OpenLibCLI/        # build output directory
+
+# ---- Keil MDK-ARM build output ---------------------------------------------
+**/MDK-ARM/OpenLibCLI/
+*.scvd
+OpenLibCLI.uvguix.PC
+
+# ---- STM32CubeIDE / Eclipse -------------------------------------------------
+STM32/.metadata/
+*.prefs
+
+# ---- ESP-IDF (ESP32) --------------------------------------------------------
+**/ESP32/*/build/
+
+# ---- Raspberry Pi Pico (SDK + CMake) ---------------------------------------
+**/RPi_Pico/*/build/
+
+# ---- PlatformIO build (Arduino, ESP32, RPi Pico) ----------------------------
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ---- Generated index / LSP cache -------------------------------------------
+*.idx
+.cache/
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+
+# ---- IDE logs ---------------------------------------------------------------
+*.log
+
+# ---- OS / editor junk -------------------------------------------------------
+.metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

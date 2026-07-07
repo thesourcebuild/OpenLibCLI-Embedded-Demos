@@ -1,0 +1,40 @@
+{
+  "name": "OpenLibCLI",
+  "version": "0.1.0",
+  "description": "Static-memory command-line interface engine for Arduino targets with transport adapters for UART and Telnet-style sessions.",
+  "keywords": [
+    "arduino",
+    "cli",
+    "shell",
+    "serial",
+    "uart",
+    "telnet",
+    "terminal",
+    "embedded",
+    "command-parser"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/thesourcebuild/OpenLibCLI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thesourcebuild/OpenLibCLI.git"
+  },
+  "authors": [
+    {
+      "name": "thesourcebuild | Muhammad Hassaan Shah",
+      "maintainer": true
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": [
+    "atmelavr",
+    "espressif8266",
+    "espressif32",
+    "ststm32",
+    "rp2040"
+  ],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src"
+  }
+}

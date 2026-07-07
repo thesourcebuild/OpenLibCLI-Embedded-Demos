@@ -1,0 +1,14 @@
+../Drivers/CMSIS/Include/core_cm3.h:1762:34:__NVIC_SystemReset	1
+../Core/Src/cli_demo_setup.c:106:6:cli_demo_setup	3
+../Core/Src/cli_demo_setup.c:168:6:cli_demo_poll	2
+../Core/Src/cli_demo_setup.c:178:6:cli_demo_shutdown	1
+../Core/Src/cli_demo_setup.c:188:9:cli_demo_is_running	2
+../Core/Src/cli_demo_setup.c:200:15:cmd_show_version	1
+../Core/Src/cli_demo_setup.c:211:15:cmd_led	4
+../Core/Src/cli_demo_setup.c:232:15:cmd_reboot	0
+../Core/Src/cli_demo_setup.c:248:15:cmd_calculator	1
+../Core/Src/cli_demo_setup.c:260:15:cmd_arithmetic	1
+../Core/Src/cli_demo_setup.c:268:15:cmd_add	6
+../Core/Src/cli_demo_setup.c:298:15:cmd_sub	6
+../Core/Src/cli_demo_setup.c:332:13:cli_register_commands	1
+../Core/Src/cli_demo_setup.c:386:17:stm32_now_sec	1
