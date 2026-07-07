@@ -14,8 +14,8 @@ Embedded platform demos for [OpenLibCLI](https://github.com/thesourcebuild/OpenL
 |---|---|---|---|
 | **Arduino** | Complete | Serial (UART), Telnet (WiFi) | Arduino IDE, PlatformIO |
 | **STM32** (STM32F103RB) | Complete | Serial (UART) | STM32CubeIDE, Make, CMake, Keil, IAR |
-| **ESP32** | 📋 Planned | Serial, Telnet (native ESP-IDF) | ESP-IDF |
-| **RPi Pico** | 📋 Planned | Serial, Telnet (native Pico SDK) | Pico SDK |
+| **ESP32** | Complete | Serial, Telnet (native ESP-IDF) | ESP-IDF |
+| **RPi Pico** | Complete | Serial, Telnet (native Pico SDK) | Pico SDK |
 
 ## Demos
 
