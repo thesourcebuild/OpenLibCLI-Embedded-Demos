@@ -252,11 +252,13 @@ OPENLIBCLI_API bool parse_i8(const char *s, int8_t *out);
  * Zero libc dependency — uses only built-in double arithmetic.  Any number of
  * digits is accepted: the first 19-20 significant digits form the mantissa
  * (rounded half-up on the next digit) and further digits only affect the
- * decimal exponent. The result is within about one unit in the last place of
- * the correctly rounded value; use @c strtol_parse_double when exact IEEE
- * rounding is required.
+ * decimal exponent. The scaling by powers of ten rounds once per factor of
+ * 10^22, so the result is within a few units in the last place of the correctly
+ * rounded value (exact for short decimals with small exponents); use
+ * @c strtol_parse_double when exact IEEE rounding is required.
  *
- * Overflow returns false.  Underflow returns 0.0 with true.
+ * Overflow (a result that is not finite) returns false. Underflow returns 0.0
+ * or a subnormal value with true. "inf" and "nan" are not accepted.
  *
  * @param[in]  s   NUL-terminated decimal string.
  * @param[out] out Parsed value on success.
@@ -267,8 +269,9 @@ OPENLIBCLI_API bool parse_f64(const char *s, double *out);
 /**
  * @brief Parse a decimal floating-point string into a float.
  *
- * Delegates to parse_f64 then narrows to float.  Returns false if the
- * value overflows float (finite double but inf float).
+ * Delegates to parse_f64 then narrows to float (round to nearest). Input that
+ * rounds to ±FLT_MAX is accepted; returns false if the value would round to
+ * infinity in float.
  *
  * @param[in]  s   NUL-terminated decimal string.
  * @param[out] out Parsed value on success.
@@ -384,23 +387,28 @@ OPENLIBCLI_API bool strtol_parse_i8(const char *s, int8_t *out);
 /**
  * @brief Parse a string into a float via strtof.
  *
- * Supports decimal and scientific notation.  Requires toolchain to link
- * strtof (newlib-nano may need `-u _scanf_float`).
+ * Supports whatever strtof accepts (decimal, scientific and, on C99 libraries,
+ * hexadecimal notation) except infinities and NaN, which are rejected like
+ * overflow. Requires toolchain to link strtof (newlib-nano may need
+ * `-u _scanf_float`).
  *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
  * @return true on success (underflow yields 0 or a subnormal value, like
- *         @c parse_f32), false on parse failure or overflow.
+ *         @c parse_f32), false on parse failure, overflow, inf or NaN.
  */
 OPENLIBCLI_API bool strtol_parse_float(const char *s, float *out);
 
 /**
  * @brief Parse a string into a double via strtod.
  *
+ * Accepts what strtod accepts except infinities and NaN (see
+ * @c strtol_parse_float).
+ *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
  * @return true on success (underflow yields 0 or a subnormal value, like
- *         @c parse_f64), false on parse failure or overflow.
+ *         @c parse_f64), false on parse failure, overflow, inf or NaN.
  */
 OPENLIBCLI_API bool strtol_parse_double(const char *s, double *out);
 

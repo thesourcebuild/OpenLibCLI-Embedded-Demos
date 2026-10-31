@@ -256,8 +256,9 @@ extern "C" {
  */
 typedef enum {
   CLI_IDLE_TIMEOUT_POLICY_CLOSE = 0,         /**< Terminate the session. */
-  CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION = 1, /**< Restart the banner / auth flow (default). Fires
-                                                once per idle period; re-armed by user input. */
+  CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION = 1, /**< Restart the banner / auth flow (default). Armed
+                                                by user input: an untouched session is never
+                                                reset, so it fires once per idle period. */
   CLI_IDLE_TIMEOUT_POLICY_IGNORE = 2,        /**< Ignore idle timeout events. */
 } cli_idle_timeout_mode_enum_t;
 
@@ -656,15 +657,18 @@ struct cli_cmd_s {
 /* Navigation Frame ---------------------------------------------------------------------*/
 
 /**
- * @brief One saved navigation level (mode + submenu context).
+ * @brief One saved navigation level (mode + submenu context + privilege).
  *
  * A frame is pushed whenever the session enters a new mode (@c cli_set_mode) or a
- * submenu context, and popped by the built-in @c exit command, which restores the
- * mode and context recorded in the frame.
+ * submenu context, and popped by the built-in @c exit command (or by @c cli_set_mode
+ * returning to an enclosing mode), which restores the mode, context and privilege
+ * recorded in the frame. Leaving the level entered by @c enable therefore also drops
+ * the privilege it granted.
  */
 typedef struct {
   cli_mode_t mode;          /**< Mode to restore when this level is left. */
   cli_cmd_handle_t context; /**< Submenu context to restore, or @c CLI_CMD_ROOT. */
+  cli_priv_t privilege;     /**< Privilege to restore when this level is left. */
 } cli_nav_frame_struct_t;
 
 /* CLI Session Instance -----------------------------------------------------------------*/
@@ -791,7 +795,9 @@ struct cli_s {
   cli_idle_timeout_mode_enum_t idle_timeout_policy; /**< Fallback behaviour when no
                                                 idle callback is set. */
   cli_idle_timeout_fn idle_timeout_cb;              /**< Called when the idle timer expires. */
-  bool idle_expired; /**< Set after a reset-session timeout; cleared by the next user activity. */
+  bool idle_armed; /**< The reset-session idle policy applies: set by user input, cleared
+                        when the session (re)starts — an untouched session has nothing to
+                        reset. The close policy and the idle callback do not depend on it. */
 #endif
 
 #if CLI_ENABLE_PERIODIC_CALLBACK
@@ -924,7 +930,7 @@ OPENLIBCLI_API void cli_init(cli_struct_t *cli, const char *hostname,
  * @brief One-time library initialisation.
  *
  * Must be called once before any @c cli_init() call.  Currently a no-op
- * (built-in commands are registered per-session in @c cli_init()), but
+ * (built-in commands are registered per session with @c cli_add_builtin_cmds()), but
  * calling it ensures forward compatibility should global state be added
  * in a future release.
  */
@@ -952,7 +958,9 @@ OPENLIBCLI_API cli_session_state_enum_t cli_get_session_state(const cli_struct_t
  * @brief Restart the session flow from banner â†’ auth (optional) â†’ run.
  *
  * Starts a fresh logical session: mode, privilege, submenu navigation, line
- * editor state, and command history are reset.
+ * editor state, and command history are reset. Usable from a command handler
+ * (the @c quit / @c exit reset policies call it); unlike @c cli_start(), a
+ * pending transport write failure is kept, so a dead peer still ends the session.
  *
  * @param[in] cli  Active CLI session.
  */
@@ -1173,8 +1181,11 @@ OPENLIBCLI_API void cli_set_idle_timeout_cb(cli_struct_t *cli, uint32_t seconds,
 /**
  * @brief Set idle-timeout behaviour when no expiry callback is registered.
  *
- * The default is @c CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION, which restarts the
- * session once and then waits for user input before the timer can fire again.
+ * The default is @c CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION. It applies only once the
+ * user has typed something since the session started (or was last reset): a
+ * session waiting untouched at its first prompt is already in the state a reset
+ * would produce, so it is not restarted. @c CLI_IDLE_TIMEOUT_POLICY_CLOSE counts
+ * from the start of the session, so a connection nobody uses is closed.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  One of @c CLI_IDLE_TIMEOUT_POLICY_CLOSE, @c
@@ -1451,8 +1462,14 @@ OPENLIBCLI_API void cli_hide_command(cli_struct_t *cli, cli_cmd_handle_t handle)
 /**
  * @brief Start a feed-based session.
  *
- * Resets the state machine to @c CLI_SESSION_INIT. Call this once before the
- * first @c cli_session_engine() call.
+ * Starts a fresh logical session (banner → optional login → prompt): mode,
+ * privilege, submenu navigation, line editor, history, pipe filter, login state
+ * and a previous transport write failure are reset, and the idle timer restarts.
+ * Configuration (commands, users, callbacks, policies) is kept.
+ *
+ * Call it before the first @c cli_session_engine() call, and again to begin a new
+ * session on the same @c cli_struct_t after @c cli_session_engine() stopped (for
+ * example when a new client connects to the same transport).
  *
  * @param[in] cli  CLI session to start.
  */
@@ -1465,6 +1482,11 @@ OPENLIBCLI_API void cli_start(cli_struct_t *cli);
  * checking, and input processing in one call.  Suitable for bare-metal
  * poll / super-loop integrations. Call this from a bare-metal poll / super-loop to get full session
  * handling.
+ *
+ * At most @c CLI_MAX_RX_BYTES_PER_TICK input bytes are processed per call; the
+ * rest stays in the transport (still reported by @c available()) for the next
+ * call, so a continuous input stream cannot keep the call from returning.
+ * Input processing also stops as soon as a transport write fails.
  *
  * @param[in] cli  Active CLI session.
  *
@@ -1551,18 +1573,19 @@ OPENLIBCLI_API int8_t cli_exec_argv(cli_struct_t *cli, const char *const *argv, 
  *
  * Navigation is stack based:
  *  - If @p mode is already on the navigation stack (an enclosing level), the
- *    session returns to that level, restoring its submenu context.
- *  - Otherwise the current mode and context are pushed, so a later @c exit
- *    returns here, and @p mode becomes active.
+ *    session returns to that level, restoring its submenu context and privilege.
+ *  - Otherwise the current mode, context and privilege are pushed, so a later
+ *    @c exit returns here, and @p mode becomes active.
  *
- * The @c on_mode_change callback fires when the mode actually changes.
+ * The @c on_mode_change callback fires when the mode or privilege actually changes.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  New mode value (application-defined; use predefined
- *                  @c CLI_MODE_* constants or custom values).
+ *                  @c CLI_MODE_* constants or custom values; not @c CLI_MODE_ANY).
  *
- * @return @c CLI_OK, @c CLI_ERR if @p cli is @c NULL, or @c CLI_ERR_NOMEM when the
- *         navigation stack (@c CLI_MAX_CONTEXT_DEPTH) is full (mode unchanged).
+ * @return @c CLI_OK, @c CLI_ERR if @p cli is @c NULL or @p mode is @c CLI_MODE_ANY, or
+ *         @c CLI_ERR_NOMEM when the navigation stack (@c CLI_MAX_CONTEXT_DEPTH) is full
+ *         (mode unchanged).
  */
 OPENLIBCLI_API int8_t cli_set_mode(cli_struct_t *cli, cli_mode_t mode);
 

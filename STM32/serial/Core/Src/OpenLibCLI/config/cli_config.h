@@ -1,17 +1,22 @@
 /**
- * @file cli_arduino_config.h
- * @brief Embedded-specific compile-time capacity profile for OpenLibCLI.
+ * @file cli_config.h
+ * @brief Compile-time capacity and feature constants for OpenLibCLI.
  *
- * Two profiles are provided:
+ * All tunable macros are guarded with @c #ifndef so they can be overridden
+ * on the compiler command line or by editing this header before it is included.
  *
- *  - **AVR profile** (@c __AVR__ defined): Ultra-small defaults targeting the
- *    UNO / Nano (≤ 2 KB SRAM).  History and tab-completion are enabled with
- *    compact command metadata.
- *  - **Non-AVR Embedded profile**: Richer defaults for STM32, ESP32, RP2040,
- *    etc.  History and tab-completion are enabled.
- *
- * All macros are guarded with @c #ifndef so any value can be overridden on
- * the compiler command line.
+ * Quick reference (desktop defaults):
+ *   Capacity: CLI_MAX_ARGS 32, CLI_MAX_NAME_LEN 64,
+ *             CLI_MAX_HELP_LEN 128, CLI_MAX_ALIASES 2
+ *   Input:    CLI_MAX_INPUT_LEN 512, CLI_MAX_HISTORY 50
+ *   Session:  CLI_MAX_CONTEXT_DEPTH 16, CLI_MAX_MODES 16, CLI_MAX_MODE_NAME_LEN 32
+ *   Auth:     CLI_MAX_USERS 8, CLI_MAX_USERNAME_LEN 32, CLI_MAX_PASSWORD_LEN 64,
+ *             CLI_MAX_ENABLE_SECRET_LEN 64
+ *   Display:  CLI_MAX_PROMPT_LEN 64, CLI_MAX_BANNER_LEN 512, CLI_MAX_OUTPUT_BUF 1024
+ *   Timing:   CLI_TRANSPORT_POLL_MS 1000, CLI_DEFAULT_IDLE_TIMEOUT_SEC 10
+ *   Features: CLI_ENABLE_HISTORY 1, TAB_COMPLETION 1, COMMAND_HELP 1, BANNER 1,
+ *             AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
+ *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 0
  *
  * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
  *
@@ -26,182 +31,42 @@
 extern "C" {
 #endif
 
-/** @defgroup CLI_EmbeddedConfig Embedded Capacity Profiles
- *  @brief Memory-constrained defaults for Embedded targets.
+/** @defgroup CLI_Config Compile-time Configuration
+ *  @brief Override any of these macros before including cli.h to tune the
+ *         library for your target.
  *  @{
  */
 
 /*=======================================================================================
- *  AVR Profile  (ATmega328P: UNO / Nano — ≤ 2 KB SRAM)
+ *  Command / Capacity
  *=======================================================================================*/
 
-#if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
-
-/*-----------------------------------------------------------------------------
- *  Command / Capacity
- *-----------------------------------------------------------------------------*/
-
 #ifndef CLI_MAX_ARGS
-#define CLI_MAX_ARGS 4 /**< AVR: max tokenised arguments. */
+#define CLI_MAX_ARGS 32 /**< Maximum tokens after tokenising one input line. */
 #endif
+
 #ifndef CLI_MAX_NAME_LEN
-#define CLI_MAX_NAME_LEN 8 /**< AVR: max command keyword length. */
+#define CLI_MAX_NAME_LEN 64 /**< Maximum length of a single command keyword. */
 #endif
+
 #ifndef CLI_MAX_HELP_LEN
-#define CLI_MAX_HELP_LEN 10 /**< AVR: max help string length. */
+#define CLI_MAX_HELP_LEN 128 /**< Maximum length of a command help string. */
 #endif
+
 #ifndef CLI_MAX_ALIASES
-#define CLI_MAX_ALIASES 0 /**< AVR: alias slots per node. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Input / History
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_INPUT_LEN
-#define CLI_MAX_INPUT_LEN 48 /**< AVR: max input line length (bytes). */
-#endif
-
-#ifndef CLI_ENABLE_HISTORY
-#define CLI_ENABLE_HISTORY 1 /**< AVR: history enabled. */
-#endif
-
-#ifndef CLI_HISTORY_INDEX_SELECTION
-/**< Compile in index based selection from history table: 1 = enabled, 0 = omitted.*/
-#define CLI_HISTORY_INDEX_SELECTION 0
-#endif
-
-#ifndef CLI_MAX_HISTORY
-#define CLI_MAX_HISTORY 3 /**< AVR: history ring depth. */
-#endif
-
-#ifndef CLI_HISTORY_BUF_SIZE
-#define CLI_HISTORY_BUF_SIZE 48 /**< AVR: flat history buffer size (bytes). */
-#endif
-
-#ifndef CLI_HISTORY_RESTORE_PREBROWSE_LINE
-/**< AVR: do not preserve the pre-browse edit line. */
-#define CLI_HISTORY_RESTORE_PREBROWSE_LINE 0
-#endif
-
-#ifndef CLI_ENABLE_TAB_COMPLETION
-#define CLI_ENABLE_TAB_COMPLETION 1 /**< AVR: tab completion enabled. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Session / Lifecycle
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_CONTEXT_DEPTH
-#define CLI_MAX_CONTEXT_DEPTH 2 /**< AVR: context / submenu stack depth. */
-#endif
-#ifndef CLI_MAX_MODES
-#define CLI_MAX_MODES 3 /**< AVR: distinct CLI modes. */
-#endif
-#ifndef CLI_MAX_MODE_NAME_LEN
-#define CLI_MAX_MODE_NAME_LEN 4 /**< AVR: max mode name length. */
-#endif
-#ifndef CLI_ENABLE_MODE_NAMES
-#define CLI_ENABLE_MODE_NAMES 0 /**< AVR: mode-name storage disabled to save 12B SRAM. */
-#endif
-#ifndef CLI_ENABLE_IDLE_TIMEOUT
-#define CLI_ENABLE_IDLE_TIMEOUT 0 /**< AVR: idle timeout disabled to save SRAM. */
-#endif
-#ifndef CLI_ENABLE_PERIODIC_CALLBACK
-#define CLI_ENABLE_PERIODIC_CALLBACK 0 /**< AVR: periodic callback disabled to save SRAM. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Auth / Security
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_USERS
-#define CLI_MAX_USERS 1 /**< AVR: local auth table entries. */
-#endif
-#ifndef CLI_MAX_USERNAME_LEN
-#define CLI_MAX_USERNAME_LEN 6 /**< AVR: max username length. */
-#endif
-#ifndef CLI_MAX_PASSWORD_LEN
-#define CLI_MAX_PASSWORD_LEN 6 /**< AVR: max password length. */
-#endif
-#ifndef CLI_MAX_ENABLE_SECRET_LEN
-#define CLI_MAX_ENABLE_SECRET_LEN 6 /**< AVR: max enable secret length. */
-#endif
-#ifndef CLI_ENABLE_AUTH
-#define CLI_ENABLE_AUTH 0 /**< AVR: omit username/password auth state from SRAM. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Display / Output
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_PROMPT_LEN
-#define CLI_MAX_PROMPT_LEN 8 /**< AVR: max hostname / prompt length. */
-#endif
-#ifndef CLI_MAX_BANNER_LEN
-#define CLI_MAX_BANNER_LEN 16 /**< AVR: max MOTD / banner length. */
-#endif
-#ifndef CLI_ENABLE_BANNER
-#define CLI_ENABLE_BANNER 0 /**< AVR: omit MOTD banner storage from SRAM. */
-#endif
-#ifndef CLI_MAX_OUTPUT_BUF
-#define CLI_MAX_OUTPUT_BUF 48 /**< AVR: per-line output buffer (bytes). */
-#endif
-#ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
-#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves the buffer). */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Transport / Timing
- *-----------------------------------------------------------------------------*/
-
-#define CLI_ENABLE_TIMMING_STATS 0 /**< AVR: tick-timing stats disabled to save SRAM. */
-
-/*-----------------------------------------------------------------------------
- *  Feature Flags — computed
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_ENABLE_COMMAND_HELP
-#define CLI_ENABLE_COMMAND_HELP 0 /**< AVR: omit per-command help strings from SRAM. */
-#endif
-
-#ifndef CLI_ENABLE_ALIASES
-#define CLI_ENABLE_ALIASES 0 /**< AVR: alias support disabled to save RAM. */
+#define CLI_MAX_ALIASES 2 /**< Alias names stored inline per command node. */
 #endif
 
 /*=======================================================================================
- *  Non-AVR Embedded Profile  (STM32, ESP32, RP2040, …)
+ *  Input / History
  *=======================================================================================*/
 
-#else
-
-/*-----------------------------------------------------------------------------
- *  Command / Capacity
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_ARGS
-#define CLI_MAX_ARGS 12 /**< max tokenised arguments. */
-#endif
-#ifndef CLI_MAX_NAME_LEN
-#define CLI_MAX_NAME_LEN 20 /**< max command keyword length. */
-#endif
-#ifndef CLI_MAX_HELP_LEN
-#define CLI_MAX_HELP_LEN 64 /**< max help string length. */
-#endif
-#ifndef CLI_MAX_ALIASES
-#define CLI_MAX_ALIASES 2 /**< alias slots per node. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Input / History
- *-----------------------------------------------------------------------------*/
-
 #ifndef CLI_MAX_INPUT_LEN
-#define CLI_MAX_INPUT_LEN 96 /**< max input line length (bytes). */
+#define CLI_MAX_INPUT_LEN 512 /**< Maximum characters per input line (including NUL). */
 #endif
 
 #ifndef CLI_ENABLE_HISTORY
-#define CLI_ENABLE_HISTORY 1 /**< history enabled. */
+#define CLI_ENABLE_HISTORY 1 /**< Compile in command history: 1 = enabled, 0 = omitted. */
 #endif
 
 #ifndef CLI_HISTORY_INDEX_SELECTION
@@ -210,112 +75,123 @@ extern "C" {
 #endif
 
 #ifndef CLI_MAX_HISTORY
-#define CLI_MAX_HISTORY 5 /**< history ring depth. */
+#define CLI_MAX_HISTORY 10 /**< Command history ring-buffer depth (entries). Max=255 */
 #endif
 
 #ifndef CLI_HISTORY_BUF_SIZE
-#define CLI_HISTORY_BUF_SIZE 128 /**< flat history buffer size (bytes). */
+#define CLI_HISTORY_BUF_SIZE 2048 /**< Flat history buffer size (bytes). */
 #endif
 
 #ifndef CLI_HISTORY_RESTORE_PREBROWSE_LINE
-/**< restore the pre-browse edit line when history returns to the tip. */
+/**< When history browsing returns to the tip, restore the pre-browse edit line:
+       1 = enabled, 0 = clear the line instead. */
 #define CLI_HISTORY_RESTORE_PREBROWSE_LINE 1
 #endif
 
 #ifndef CLI_ENABLE_TAB_COMPLETION
-#define CLI_ENABLE_TAB_COMPLETION 1 /**< tab completion enabled. */
+#define CLI_ENABLE_TAB_COMPLETION 1 /**< Compile in tab-completion: 1 = enabled, 0 = omitted. */
 #endif
-
-/*-----------------------------------------------------------------------------
- *  Session / Lifecycle
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_CONTEXT_DEPTH
-#define CLI_MAX_CONTEXT_DEPTH 8 /**< context / submenu stack depth. */
-#endif
-#ifndef CLI_MAX_MODES
-#define CLI_MAX_MODES 12 /**< distinct CLI modes. */
-#endif
-#ifndef CLI_MAX_MODE_NAME_LEN
-#define CLI_MAX_MODE_NAME_LEN 16 /**< max mode name length. */
-#endif
-#ifndef CLI_ENABLE_MODE_NAMES
-#define CLI_ENABLE_MODE_NAMES 1 /**< mode-name storage enabled. */
-#endif
-#ifndef CLI_ENABLE_IDLE_TIMEOUT
-#define CLI_ENABLE_IDLE_TIMEOUT 1 /**< idle timeout enabled. */
-#endif
-#ifndef CLI_ENABLE_PERIODIC_CALLBACK
-#define CLI_ENABLE_PERIODIC_CALLBACK 1 /**< periodic callback enabled. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Auth / Security
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_USERS
-#define CLI_MAX_USERS 2 /**< local auth table entries. */
-#endif
-#ifndef CLI_MAX_USERNAME_LEN
-#define CLI_MAX_USERNAME_LEN 16 /**< max username length. */
-#endif
-#ifndef CLI_MAX_PASSWORD_LEN
-#define CLI_MAX_PASSWORD_LEN 16 /**< max password length. */
-#endif
-#ifndef CLI_MAX_ENABLE_SECRET_LEN
-#define CLI_MAX_ENABLE_SECRET_LEN 16 /**< max enable secret length. */
-#endif
-#ifndef CLI_ENABLE_AUTH
-#define CLI_ENABLE_AUTH 1 /**< username/password auth enabled. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Display / Output
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_MAX_PROMPT_LEN
-#define CLI_MAX_PROMPT_LEN 24 /**< max hostname / prompt length. */
-#endif
-#ifndef CLI_MAX_BANNER_LEN
-#define CLI_MAX_BANNER_LEN 256 /**< max MOTD / banner length. */
-#endif
-#ifndef CLI_ENABLE_BANNER
-#define CLI_ENABLE_BANNER 1 /**< store MOTD banner text. */
-#endif
-#ifndef CLI_MAX_OUTPUT_BUF
-#define CLI_MAX_OUTPUT_BUF 160 /**< per-line output buffer (bytes). */
-#endif
-#ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
-#define CLI_ENABLE_PRINT_TRANSPORT_CB 1 /**< per-line output callback enabled. */
-#endif
-
-/*-----------------------------------------------------------------------------
- *  Transport / Timing
- *-----------------------------------------------------------------------------*/
-
-#define CLI_ENABLE_TIMMING_STATS 0 /**< tick-timing stats disabled. */
-
-/*-----------------------------------------------------------------------------
- *  Feature Flags — computed
- *-----------------------------------------------------------------------------*/
-
-#ifndef CLI_ENABLE_COMMAND_HELP
-#define CLI_ENABLE_COMMAND_HELP 1 /**< store command help strings. */
-#endif
-
-#ifndef CLI_ENABLE_ALIASES
-#define CLI_ENABLE_ALIASES 0 /**< alias support (0 = disabled). */
-#endif
-
-#endif /* Non-AVR Embedded profile */
 
 /*=======================================================================================
- *  Shared Embedded Settings
+ *  Session / Lifecycle
  *=======================================================================================*/
 
-#ifndef CLI_DEFAULT_IDLE_TIMEOUT_SEC
-#define CLI_DEFAULT_IDLE_TIMEOUT_SEC 0 /**< Default idle timeout in seconds; 0 disables it. */
+#ifndef CLI_MAX_CONTEXT_DEPTH
+#define CLI_MAX_CONTEXT_DEPTH 16 /**< Maximum command context / submenu stack depth. */
 #endif
+
+#ifndef CLI_MAX_MODES
+#define CLI_MAX_MODES 16 /**< Maximum distinct CLI modes (including built-in modes). */
+#endif
+
+#ifndef CLI_MAX_MODE_NAME_LEN
+#define CLI_MAX_MODE_NAME_LEN 32 /**< Maximum mode name string length (including NUL). */
+#endif
+
+#ifndef CLI_ENABLE_MODE_NAMES
+#define CLI_ENABLE_MODE_NAMES 1 /**< Display mode name in prompt suffix. */
+#endif
+
+#ifndef CLI_ENABLE_IDLE_TIMEOUT
+#define CLI_ENABLE_IDLE_TIMEOUT 1 /**< Compile in idle-timeout state and checks. */
+#endif
+
+#ifndef CLI_ENABLE_PERIODIC_CALLBACK
+#define CLI_ENABLE_PERIODIC_CALLBACK 1 /**< Compile in periodic callback state and checks. */
+#endif
+
+/*=======================================================================================
+ *  Auth / Security
+ *=======================================================================================*/
+
+#ifndef CLI_MAX_USERS
+#define CLI_MAX_USERS 8 /**< Local authentication table entries. */
+#endif
+
+#ifndef CLI_MAX_USERNAME_LEN
+#define CLI_MAX_USERNAME_LEN 32 /**< Maximum username string length (including NUL). */
+#endif
+
+#ifndef CLI_MAX_PASSWORD_LEN
+#define CLI_MAX_PASSWORD_LEN 64 /**< Maximum password string length (including NUL). */
+#endif
+
+#ifndef CLI_MAX_ENABLE_SECRET_LEN
+#define CLI_MAX_ENABLE_SECRET_LEN 64 /**< Maximum enable secret string length (including NUL). */
+#endif
+
+#ifndef CLI_ENABLE_AUTH
+#define CLI_ENABLE_AUTH 1 /**< Compile in username/password auth and enable-secret prompts. */
+#endif
+
+/*=======================================================================================
+ *  Display / Output
+ *=======================================================================================*/
+
+#ifndef CLI_MAX_PROMPT_LEN
+#define CLI_MAX_PROMPT_LEN 64 /**< Maximum hostname / prompt string length. */
+#endif
+
+#ifndef CLI_MAX_BANNER_LEN
+#define CLI_MAX_BANNER_LEN 512 /**< Maximum MOTD / banner string length. */
+#endif
+
+#ifndef CLI_ENABLE_BANNER
+#define CLI_ENABLE_BANNER 1 /**< Store and emit a per-session MOTD banner. */
+#endif
+
+#ifndef CLI_MAX_OUTPUT_BUF
+#define CLI_MAX_OUTPUT_BUF 1024 /**< Per-line output buffer used by the pipe filter. */
+#endif
+
+#ifndef CLI_ENABLE_PIPE_FILTER
+/**< Compile in IOS-style pipe filters (grep/exclude/begin/count):
+       1 = enabled, 0 = omitted (saves filter struct fields + logic). */
+#define CLI_ENABLE_PIPE_FILTER 1
+#endif
+
+#ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
+/**< Compile in cli_set_print_transport_cb() (per-line output callback). Needs the
+       CLI_MAX_OUTPUT_BUF line buffer even when pipe filters are omitted. */
+#define CLI_ENABLE_PRINT_TRANSPORT_CB 1
+#endif
+
+#ifndef CLI_MAX_EXEC_DEPTH
+/**< Maximum commands executing at once (a command handler calling cli_exec() counts as a
+       second level). Guards against unbounded recursion; costs no memory. */
+#define CLI_MAX_EXEC_DEPTH 4
+#endif
+
+#ifndef CLI_MAX_RX_BYTES_PER_TICK
+/**< Maximum input bytes one cli_session_engine() call processes. Bytes beyond it stay in the
+       transport for the next call, so a continuous input stream cannot keep the engine from
+       returning to the caller's loop. Costs no memory. */
+#define CLI_MAX_RX_BYTES_PER_TICK 1024
+#endif
+
+/*=======================================================================================
+ *  Transport / Timing
+ *=======================================================================================*/
 
 #ifndef CLI_TRANSPORT_POLL_MS
 /** Transport poll interval in milliseconds used as the blocking read timeout for WIN/POSIX socket
@@ -323,12 +199,25 @@ extern "C" {
 #define CLI_TRANSPORT_POLL_MS 1000
 #endif
 
-#ifndef CLI_ENABLE_PIPE_FILTER
-#define CLI_ENABLE_PIPE_FILTER 0 /**< Pipe filters disabled on Embedded to save SRAM. */
+#ifndef CLI_DEFAULT_IDLE_TIMEOUT_SEC
+#define CLI_DEFAULT_IDLE_TIMEOUT_SEC 10 /**< Default idle timeout in seconds; 0 disables it. */
 #endif
 
-#ifndef CLI_MAX_EXEC_DEPTH
-#define CLI_MAX_EXEC_DEPTH 2 /**< Max nesting of cli_exec() calls made from command handlers. */
+#ifndef CLI_ENABLE_TIMMING_STATS
+/**< Enable tick-timing statistics: 0x01 = enabled, 0x00 = disabled. */
+#define CLI_ENABLE_TIMMING_STATS 1
+#endif
+
+/*=======================================================================================
+ *  Feature Flags — computed
+ *=======================================================================================*/
+
+#ifndef CLI_ENABLE_COMMAND_HELP
+#define CLI_ENABLE_COMMAND_HELP 1 /**< Store per-command help strings for @c ?. */
+#endif
+
+#ifndef CLI_ENABLE_ALIASES
+#define CLI_ENABLE_ALIASES 1 /**< Command alias support: 1 = enabled, 0 = omitted. */
 #endif
 
 #ifndef CLI_ENABLE_TIME_SOURCE

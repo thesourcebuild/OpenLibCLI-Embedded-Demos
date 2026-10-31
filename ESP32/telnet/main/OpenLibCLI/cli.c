@@ -69,6 +69,14 @@
 #error "CLI_MAX_EXEC_DEPTH must be in the range 1..255"
 #endif
 
+#if CLI_MAX_RX_BYTES_PER_TICK < 1
+#error "CLI_MAX_RX_BYTES_PER_TICK must be at least 1"
+#endif
+
+#if (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK) && !CLI_ENABLE_TIME_SOURCE
+#error "CLI_ENABLE_IDLE_TIMEOUT and CLI_ENABLE_PERIODIC_CALLBACK need a clock: leave CLI_ENABLE_TIME_SOURCE at its default (derived from them) or disable both features"
+#endif
+
 /*=======================================================================================
  * Private Defines
  *=======================================================================================*/
@@ -190,6 +198,15 @@ typedef struct {
   bool as_output; /**< true: command output (pipe filter applies); false: editor UI. */
 } cli_help_ctx_struct_t;
 
+#if CLI_ENABLE_TAB_COMPLETION
+/** @brief State shared with @c cli_complete_cb while collecting Tab-completion candidates. */
+typedef struct {
+  cli_len_t count;        /**< Number of matching keywords. */
+  const char *first_text; /**< First matching keyword. */
+  cli_len_t common;       /**< Length of the prefix shared by all matching keywords. */
+} cli_complete_ctx_struct_t;
+#endif
+
 /*=======================================================================================
  * External Data Variables
  *=======================================================================================*/
@@ -213,6 +230,7 @@ static void cli_flush(cli_struct_t *cli);
 /* Session Timing Helpers ---------------------------------------------------------------*/
 
 static void cli_touch_activity_internal(cli_struct_t *cli);
+static void cli_idle_period_restart(cli_struct_t *cli);
 #if CLI_ENABLE_TIME_SOURCE && ENV_IS_OS_ENVIRONMENT
 static uint32_t cli_default_time_source(void *ctx);
 #endif
@@ -274,7 +292,7 @@ static inline char *cli_skip_non_spaces(char *p);
 static bool cli_handle_valid(const cli_struct_t *cli, cli_cmd_handle_t h);
 static void cli_notify_mode_change(cli_struct_t *cli);
 static int8_t cli_nav_push(cli_struct_t *cli);
-static void cli_nav_pop(cli_struct_t *cli);
+static void cli_nav_return(cli_struct_t *cli, uint8_t level);
 static void cli_nav_reset(cli_struct_t *cli);
 static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
                              cli_cmd_handle_t replacement);
@@ -307,10 +325,11 @@ static cli_tokenize_status_enum_t cli_tokenize(char *buf, const char *argv[], cl
 
 /* Command Tree Traversal ----------------------------------------------------------------*/
 
-/** @brief Callback invoked by @c cli_foreach_match for each match. */
-typedef bool (*cli_match_cb_t)(cli_struct_t *cli, cli_cmd_handle_t h, cli_help_ctx_struct_t *ctx);
+/** @brief Callback invoked by @c cli_foreach_match for each match; @p text is the matched
+ *         keyword (name or alias). Returns @c false to stop the iteration. */
+typedef bool (*cli_match_cb_t)(cli_struct_t *cli, cli_cmd_handle_t h, const char *text, void *ctx);
 
-static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, cli_help_ctx_struct_t *ctx);
+static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, const char *text, void *ctx);
 
 static bool cli_cmd_selectable(const cli_struct_t *cli, const cli_cmd_struct_t *cmd,
                                cli_cmd_handle_t parent);
@@ -324,10 +343,14 @@ static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t
                                              cli_mode_t mode, const char *help,
                                              bool help_progmem);
 static void cli_foreach_match(cli_struct_t *cli, const char *prefix, cli_cmd_handle_t parent,
-                              cli_match_cb_t cb, cli_help_ctx_struct_t *ctx);
+                              bool with_root, cli_match_cb_t cb, void *ctx);
 static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent,
                               cli_cmd_handle_t *out);
 static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent);
+static bool cli_cmd_has_children(cli_struct_t *cli, cli_cmd_handle_t parent);
+static cli_cmd_handle_t cli_first_word_parent(cli_struct_t *cli, const char *word);
+static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
+                             cli_cmd_handle_t *parent, bool *args);
 static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli);
 static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before);
 static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli);
@@ -336,6 +359,7 @@ static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli);
 
 #if CLI_ENABLE_TAB_COMPLETION
 static void cli_tab_complete(cli_struct_t *cli);
+static bool cli_complete_cb(cli_struct_t *cli, cli_cmd_handle_t h, const char *text, void *raw);
 #endif
 
 /* Inline '?' Help ----------------------------------------------------------------------*/
@@ -386,6 +410,7 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli);
 static int8_t cli_auth_handle(cli_struct_t *cli, int byte);
 #endif
 static void cli_reset_input(cli_struct_t *cli);
+static void cli_session_reset(cli_struct_t *cli);
 static int8_t cli_submit_line(cli_struct_t *cli);
 
 /* Escape-Sequence State Machine --------------------------------------------------------*/
@@ -463,12 +488,8 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_exit(cli_struct_t *cli, const char *cmd, c
   if (rc != CLI_OK) {
     /* Hook result takes precedence. */
   } else if (cli->nav_depth > 0U) {
-    /* Leave one navigation level (submenu and/or mode). */
-    bool leaving_enable = (cli->mode == CLI_MODE_ENABLE);
-    cli_nav_pop(cli);
-    if (leaving_enable && cli->mode != CLI_MODE_ENABLE) {
-      cli_set_privilege(cli, CLI_PRIV_USER);
-    }
+    /* Leave one navigation level (submenu and/or mode, and the privilege it granted). */
+    cli_nav_return(cli, (uint8_t)(cli->nav_depth - 1U));
   } else {
     /* Login floor: nothing left to leave. */
     switch (cli->exit_root_policy) {
@@ -660,10 +681,16 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
   int8_t rc = CLI_OK;
 
   cli_cmd_handle_t parent = cli_menu_context_parent(cli);
+  /* Without arguments inside a submenu, the root commands that still run there are listed
+   * after the submenu's own commands. */
+  bool with_root = (argc <= 1 && parent != CLI_CMD_ROOT);
 
   if (argc > 1) {
     cli_cmd_handle_t h;
     for (cli_argc_t i = 1; i < argc; i++) {
+      if (i == 1) {
+        parent = cli_first_word_parent(cli, argv[1]); /* same lookup as execution */
+      }
       int8_t r = cli_resolve_one(cli, argv[i], parent, &h);
       if (r != CLI_OK) {
         if (r == CLI_ERR) {
@@ -681,7 +708,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
 
   if (rc == CLI_OK) {
     cli_help_ctx_struct_t ctx = {False, True};
-    cli_foreach_match(cli, "", parent, cli_print_help_cb, &ctx);
+    cli_foreach_match(cli, "", parent, with_root, cli_print_help_cb, &ctx);
     if (!ctx.any) {
       CLI_PRINTLN_STR(cli, "  <cr>");
     }
@@ -774,6 +801,17 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_usage_keys(cli_struct_t *cli, const char *
 
 OPENLIBCLI_API void cli_start(cli_struct_t *cli) {
   if (cli != NULL) {
+    /* A new session on (possibly) a new connection: nothing of a previous run carries over,
+     * including a half-received line ending and a write failure of the old peer. */
+    cli_session_reset(cli);
+    cli->eol_prev = 0U;
+    cli->tx_error = False;
+    cli_idle_period_restart(cli);
+#if CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_TIME_SOURCE
+    if (cli->time_source != NULL) {
+      cli->last_periodic_ts = cli->time_source(cli->time_source_ctx);
+    }
+#endif
     cli->session_state = CLI_SESSION_INIT;
 
     cli_flush(cli);
@@ -855,40 +893,31 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
 #endif
 
 #if CLI_ENABLE_AUTH
-    if (active && cli->auth_state == CLI_AUTH_LOCKOUT) {
-      if (cli_auth_lockout_expired(cli)) {
-        cli_auth_lockout_end(cli);
-      } else {
-        /* Discard everything typed during the lockout so it is not replayed afterwards. */
-        cli_transport_ret_t avail = cli->transport.available(cli->transport.ctx);
-        while (avail > 0) {
-          if (cli->transport.read(cli->transport.ctx) < 0) {
-            avail = -1;
-          } else {
-            avail = cli->transport.available(cli->transport.ctx);
-          }
-        }
-        if (avail < 0) {
-          cli->session_state = CLI_SESSION_STOP;
-          result = CLI_ERR;
-        }
-        active = False;
-      }
+    if (active && cli->auth_state == CLI_AUTH_LOCKOUT && cli_auth_lockout_expired(cli)) {
+      cli_auth_lockout_end(cli);
     }
 #endif
 
     if (active) {
-      cli_transport_ret_t b;
-      cli_transport_ret_t available_rc = CLI_ERR;
-      int8_t rc;
+      /* At most CLI_MAX_RX_BYTES_PER_TICK bytes per call: the rest stays in the transport
+       * for the next call, so a continuous input stream cannot keep this call running. */
+      uint32_t budget = (uint32_t)CLI_MAX_RX_BYTES_PER_TICK;
       bool keep_going = True;
 
-      // cli_println(cli, "DEBUG: I am running...");
-      while (keep_going) {
-        available_rc = cli->transport.available(cli->transport.ctx);
-        if (available_rc <= 0) {
+      while (keep_going && budget > 0U) {
+        cli_transport_ret_t available_rc = cli->transport.available(cli->transport.ctx);
+        cli_transport_ret_t b;
+        int8_t rc;
+
+        if (available_rc < 0) {
+          cli->session_state = CLI_SESSION_STOP;
+          result = CLI_ERR;
+          active = False;
+          keep_going = False;
+        } else if (available_rc == 0) {
           keep_going = False;
         } else {
+          budget--;
           b = cli->transport.read(cli->transport.ctx);
           if (b < 0) {
             cli->session_state = CLI_SESSION_STOP;
@@ -896,11 +925,10 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
             active = False;
             keep_going = False;
           } else {
-            // cli_println(cli, "DEBUG: T bytes read:%d", read_rc);
-            cli_touch_activity_internal(cli);
-
 #if CLI_ENABLE_AUTH
-            if (cli_state_is_auth_input(cli)) {
+            if (cli->auth_state == CLI_AUTH_LOCKOUT) {
+              rc = CLI_OK; /* typed during the lockout: discarded, never replayed afterwards */
+            } else if (cli_state_is_auth_input(cli)) {
               rc = cli_auth_handle(cli, b);
             } else
 #endif
@@ -912,27 +940,19 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
               result = rc;
               active = False;
               keep_going = False;
+            } else if (cli->tx_error) {
+              /* The peer is gone: do not run further commands nobody will see. */
+              keep_going = False;
             } else if (cli->session_state != CLI_SESSION_RUN) {
               /* Session restarted (quit/exit policy): leave the remaining input for the
                * next tick, after the banner / login prompt has been shown. */
               keep_going = False;
-            }
-#if CLI_ENABLE_AUTH
-            else if (cli->auth_state == CLI_AUTH_LOCKOUT) {
-              /* Lockout began: remaining input is discarded by the lockout branch. */
-              keep_going = False;
-            }
-#endif
-            else {
-              /* Keep draining the transport. */
+            } else {
+              /* Keep draining the transport (input during a lockout that just began is
+               * discarded by the same loop). */
             }
           }
         }
-      }
-
-      if (available_rc < 0) {
-        cli->session_state = CLI_SESSION_STOP;
-        result = CLI_ERR;
       }
     }
   } else {
@@ -1075,7 +1095,7 @@ OPENLIBCLI_API void cli_init(cli_struct_t *cli, const char *hostname,
 #if CLI_ENABLE_MODE_NAMES
   (void)cli_set_mode_name(cli, CLI_MODE_CONFIG, "config");
 #endif
-  cli_touch_activity_internal(cli);
+  cli_idle_period_restart(cli);
 #if CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_IDLE_TIMEOUT
   cli->last_periodic_ts = cli->last_action_ts;
 #elif CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_TIME_SOURCE
@@ -1107,30 +1127,9 @@ OPENLIBCLI_API cli_session_state_enum_t cli_get_session_state(const cli_struct_t
 
 OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
   if (cli != NULL) {
-    cli_nav_reset(cli);
-    cli_set_privilege(cli, CLI_PRIV_USER);
-    cli->esc_state = ESC_STATE_NORMAL;
-    cli->esc_param = 0;
-    cli->eol_prev = 0U;
-    cli_reset_input(cli);
-#if CLI_ENABLE_HISTORY
-    /* A restarted session may belong to a different user: do not expose old commands. */
-    (void)cli_clear_history(cli);
-#endif
-#if CLI_ENABLE_PIPE_FILTER
-    cli_filter_reset(cli);
-#endif
-#if CLI_HAS_LINE_BUFFER
-    cli->filter_line_buf_len = 0;
-#endif
-    cli->out_open = False;
-#if CLI_ENABLE_AUTH
-    cli->auth_state = CLI_AUTH_NONE;
-    cli->auth_attempts = 0;
-    cli->enable_attempts = 0;
-    cli->auth_lockout_started_ts = 0UL;
-    cli_auth_reset_work(cli);
-#endif
+    /* The line-ending state is kept: when 'quit' arrives with CR LF, the LF still belongs to
+     * that line and must not submit an empty line to the restarted session. */
+    cli_session_reset(cli);
     cli->session_state = CLI_SESSION_SHOW_BANNER;
   }
 }
@@ -1255,7 +1254,7 @@ OPENLIBCLI_API void cli_set_time_source(cli_struct_t *cli, cli_time_fn fn, void 
   if (cli != NULL) {
     cli->time_source = fn;
     cli->time_source_ctx = ctx;
-    cli_touch_activity_internal(cli);
+    cli_idle_period_restart(cli);
   }
 #else
   (void)cli;
@@ -1268,7 +1267,7 @@ OPENLIBCLI_API void cli_set_idle_timeout(cli_struct_t *cli, uint32_t seconds) {
 #if CLI_ENABLE_IDLE_TIMEOUT
   if (cli != NULL) {
     cli->idle_timeout = seconds;
-    cli_touch_activity_internal(cli);
+    cli_idle_period_restart(cli);
   }
 #else
   (void)cli;
@@ -1360,11 +1359,14 @@ OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli) {
 
 #if CLI_ENABLE_IDLE_TIMEOUT
   /* A registered callback always owns the expiry; the policy applies only without one.
-   * After a reset-session expiry the timer stays disarmed until the user types again,
-   * so an unattended session is reset once instead of every timeout period. */
-  if (cli != NULL && cli->idle_timeout != 0UL && cli->time_source != NULL && !cli->idle_expired) {
-    bool check_timeout = (cli->idle_timeout_cb != NULL ||
-                          cli->idle_timeout_policy != CLI_IDLE_TIMEOUT_POLICY_IGNORE);
+   * Closing runs from the start of the session (a connection nobody uses is closed), but a
+   * reset only makes sense once the user has typed something: a freshly started or just
+   * reset session is already in the state a reset would produce. */
+  if (cli != NULL && cli->idle_timeout != 0UL && cli->time_source != NULL) {
+    bool check_timeout =
+        (cli->idle_timeout_cb != NULL ||
+         cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_CLOSE ||
+         (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION && cli->idle_armed));
 
     if (check_timeout) {
       uint32_t now = cli->time_source(cli->time_source_ctx);
@@ -1589,7 +1591,7 @@ OPENLIBCLI_API void cli_hide_command(cli_struct_t *cli, cli_cmd_handle_t handle)
 OPENLIBCLI_API int8_t cli_set_mode(cli_struct_t *cli, cli_mode_t mode) {
   int8_t rc = CLI_ERR;
 
-  if (cli != NULL) {
+  if (cli != NULL && mode != CLI_MODE_ANY) {
     int ancestor = -1;
 
     rc = CLI_OK;
@@ -1602,11 +1604,8 @@ OPENLIBCLI_API int8_t cli_set_mode(cli_struct_t *cli, cli_mode_t mode) {
     if (mode == cli->mode) {
       /* Already there. */
     } else if (ancestor >= 0) {
-      /* Return to an enclosing level, restoring the submenu it was entered from. */
-      cli->nav_depth = (uint8_t)ancestor;
-      cli->context = cli->nav_stack[ancestor].context;
-      cli->mode = mode;
-      cli_notify_mode_change(cli);
+      /* Return to an enclosing level, restoring the submenu and privilege it had. */
+      cli_nav_return(cli, (uint8_t)ancestor);
     } else {
       rc = cli_nav_push(cli);
       if (rc == CLI_OK) {
@@ -1830,6 +1829,12 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
   rc = cli_execute(cli, line, False);
   cli->exec_used = saved_used;
 
+  if (top_level) {
+    /* The command may have emptied the editor (password prompt, session restart) while
+     * its bytes were still in use; terminate the editor's line now that nothing runs. */
+    cli->input[cli->input_len] = '\0';
+  }
+
 #if CLI_ENABLE_HISTORY && CLI_HISTORY_INDEX_SELECTION
   if (rc == CLI_EXEC_REPLAY_INPUT) {
     /* Recall into the editor only when it is free: not nested, no password prompt and no
@@ -1840,8 +1845,6 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
       rc = CLI_OK;
     }
   }
-#else
-  (void)top_level;
 #endif
 
   return rc;
@@ -2366,16 +2369,27 @@ static void cli_flush(cli_struct_t *cli) {
 /* Session Timing Helpers ---------------------------------------------------------------*/
 
 /**
- * @brief Record the current time as the last user-activity timestamp.
+ * @brief Record user activity: restart the idle period and arm the reset-session
+ *        idle policy.
  * @param[in] cli  Active CLI session.
  */
 static void cli_touch_activity_internal(cli_struct_t *cli) {
-#if CLI_ENABLE_IDLE_TIMEOUT && CLI_ENABLE_TIME_SOURCE
+#if CLI_ENABLE_IDLE_TIMEOUT
   if (cli != NULL) {
-    cli->idle_expired = False; /* Activity re-arms the idle timer. */
-    if (cli->time_source != NULL) {
-      cli->last_action_ts = cli->time_source(cli->time_source_ctx);
-    }
+    cli->idle_armed = True;
+  }
+#endif
+  cli_idle_period_restart(cli);
+}
+
+/**
+ * @brief Start a new idle period without counting it as user activity.
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_idle_period_restart(cli_struct_t *cli) {
+#if CLI_ENABLE_IDLE_TIMEOUT && CLI_ENABLE_TIME_SOURCE
+  if (cli != NULL && cli->time_source != NULL) {
+    cli->last_action_ts = cli->time_source(cli->time_source_ctx);
   }
 #else
   (void)cli;
@@ -2436,14 +2450,14 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli) {
     rc = cli->idle_timeout_cb(cli);
     if (rc == CLI_OK) {
       /* Callback kept the session alive: start a new idle period. */
-      cli_touch_activity_internal(cli);
+      cli_idle_period_restart(cli);
     }
   } else {
     if (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION) {
       CLI_WSTR(cli, "\r\n% Idle timeout. Session restarted.\r\n");
+      /* The restarted session is disarmed until the user types again, so an unattended
+       * session is reset once instead of every timeout period. */
       cli_restart_session(cli);
-      /* Fire once per idle period: stay disarmed until the user types again. */
-      cli->idle_expired = True;
     } else if (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_CLOSE) {
       CLI_WSTR(cli, "\r\n% Idle timeout.\r\n");
       cli->session_state = CLI_SESSION_STOP;
@@ -3172,18 +3186,22 @@ static cli_tokenize_status_enum_t cli_tokenize(char *buf, const char *argv[], cl
  * Intended for use as a @c cli_match_cb_t with @c cli_foreach_match. Help text
  * starts at column @c CLI_HELP_NAME_COL (at least one space after the name).
  *
- * @param[in]     cli  Active CLI session.
- * @param[in]     h    Command handle of the node to display.
- * @param[in,out] ctx  @c any is set; @c as_output selects the command-output path
- *                     (pipe filter applies) instead of a direct terminal write.
+ * @param[in]     cli   Active CLI session.
+ * @param[in]     h     Command handle of the node to display.
+ * @param[in]     text  Matched keyword (unused: the command's name is listed).
+ * @param[in,out] raw   @c cli_help_ctx_struct_t: @c any is set; @c as_output selects the
+ *                      command-output path (pipe filter applies) instead of a direct
+ *                      terminal write.
  *
  * @return Always @c true (continue iteration).
  */
-static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, cli_help_ctx_struct_t *ctx) {
+static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, const char *text, void *raw) {
+  cli_help_ctx_struct_t *ctx = (cli_help_ctx_struct_t *)raw;
   const cli_cmd_struct_t *cmd = &cli->cmd_pool[h];
   char line[CLI_HELP_LINE_SIZE];
   size_t pos = 0;
 
+  (void)text;
   ctx->any = True;
   pos = cli_strlcpy(line, "  ", sizeof(line));
   pos = pos + cli_strlcpy(&line[pos], cmd->name, sizeof(line) - pos);
@@ -3213,21 +3231,39 @@ static bool cli_print_help_cb(cli_struct_t *cli, cli_cmd_handle_t h, cli_help_ct
  * Scans the command pool and invokes @p cb for each match. When @p word is
  * empty every visible child of @p parent is reported.
  *
- * @param[in] cli     Active CLI session.
- * @param[in] word    Prefix to match, or empty string for all.
- * @param[in] parent  Root of the sub-tree to search.
- * @param[in] cb      Callback for each match.
- * @param[in] ctx     Passed through to @p cb.
+ * With @p with_root (first word inside a submenu), root commands follow the
+ * submenu's own matches: execution falls back to the root for a first word that
+ * matches nothing in the submenu, so a root command is reported when its keyword
+ * is not taken over by a submenu command.
+ *
+ * @param[in] cli        Active CLI session.
+ * @param[in] word       Prefix to match, or empty string for all.
+ * @param[in] parent     Root of the sub-tree to search.
+ * @param[in] with_root  Also report reachable root commands (see above).
+ * @param[in] cb         Callback for each match.
+ * @param[in] ctx        Passed through to @p cb.
  */
 static void cli_foreach_match(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent,
-                              cli_match_cb_t cb, cli_help_ctx_struct_t *ctx) {
+                              bool with_root, cli_match_cb_t cb, void *ctx) {
   bool keep_going = True;
+  int passes = (with_root && parent != CLI_CMD_ROOT) ? 2 : 1;
 
-  for (cli_poolsize_t i = 0; i < cli->cmd_pool_size && keep_going; i++) {
-    const cli_cmd_struct_t *cmd = &cli->cmd_pool[i];
-    if (cli_cmd_selectable(cli, cmd, parent) && !CLI_CMD_IS_HIDDEN(cmd) &&
-        cli_cmd_prefix_text(cmd, word) != NULL) {
-      keep_going = cb(cli, i, ctx);
+  for (int pass = 0; pass < passes && keep_going; pass++) {
+    cli_cmd_handle_t level = (pass == 0) ? parent : CLI_CMD_ROOT;
+
+    for (cli_poolsize_t i = 0; i < cli->cmd_pool_size && keep_going; i++) {
+      const cli_cmd_struct_t *cmd = &cli->cmd_pool[i];
+      const char *text = NULL;
+
+      if (cli_cmd_selectable(cli, cmd, level) && !CLI_CMD_IS_HIDDEN(cmd)) {
+        text = cli_cmd_prefix_text(cmd, word);
+      }
+      if (text != NULL && pass == 1 && cli_has_any_match(cli, text, parent)) {
+        text = NULL; /* typing it would select a submenu command instead */
+      }
+      if (text != NULL) {
+        keep_going = cb(cli, i, text, ctx);
+      }
     }
   }
 }
@@ -3487,6 +3523,69 @@ static bool cli_cmd_has_children(cli_struct_t *cli, cli_cmd_handle_t parent) {
 }
 
 /**
+ * @brief Return the level at which the first word of a line is looked up.
+ *
+ * Inside a submenu the submenu's own commands come first; a word that matches
+ * none of them is looked up among the root commands, which stay usable in every
+ * submenu. Unknown words are reported against the submenu.
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] word  First word of the line.
+ *
+ * @return Submenu handle or @c CLI_CMD_ROOT.
+ */
+static cli_cmd_handle_t cli_first_word_parent(cli_struct_t *cli, const char *word) {
+  cli_cmd_handle_t menu = cli_menu_context_parent(cli);
+  cli_cmd_handle_t parent = menu;
+
+  if (menu != CLI_CMD_ROOT && !cli_has_any_match(cli, word, menu) &&
+      cli_has_any_match(cli, word, CLI_CMD_ROOT)) {
+    parent = CLI_CMD_ROOT;
+  }
+
+  return parent;
+}
+
+/**
+ * @brief Resolve the complete words of a partly typed line the way execution does
+ *        (used by Tab completion and inline @c ? help).
+ *
+ * Words select subcommands while the current command has subcommands; once a
+ * command without subcommands is reached, everything after it is an argument.
+ *
+ * @param[in]  cli     Active CLI session.
+ * @param[in]  argv    Complete words.
+ * @param[in]  count   Number of words in @p argv.
+ * @param[out] parent  Node whose subcommands may follow the words.
+ * @param[out] args    @c true when the words reached a command that takes arguments.
+ *
+ * @return @c CLI_OK, @c CLI_ERR for an unknown word, or @c CLI_ERR_AMBIG.
+ */
+static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
+                             cli_cmd_handle_t *parent, bool *args) {
+  int8_t rc = CLI_OK;
+  cli_cmd_handle_t level = cli_menu_context_parent(cli);
+  bool in_args = False;
+
+  for (int d = 0; d < count && rc == CLI_OK && !in_args; d++) {
+    cli_cmd_handle_t h;
+
+    if (d == 0) {
+      level = cli_first_word_parent(cli, argv[0]);
+    }
+    rc = cli_resolve_one(cli, argv[d], level, &h);
+    if (rc == CLI_OK) {
+      level = h;
+      in_args = !cli_cmd_has_children(cli, h);
+    }
+  }
+
+  *parent = level;
+  *args = in_args;
+  return rc;
+}
+
+/**
  * @brief Return the handle at the top of the context stack, or @c
  * CLI_CMD_INVALID.
  * @param[in] cli  Active CLI session.
@@ -3586,51 +3685,26 @@ static void cli_tab_complete(cli_struct_t *cli) {
   const char *partial = (argc > 0 && !trailing_space) ? argv[argc - 1] : "";
   int depth = (trailing_space) ? argc : ((argc > 0) ? argc - 1 : 0);
 
-  /* Walk command tree through fully-matched tokens */
-  cli_cmd_handle_t parent = cli_menu_context_parent(cli);
-  for (int d = 0; d < depth && !done; d++) {
-    cli_cmd_handle_t h;
-    int8_t r = cli_resolve_one(cli, argv[d], parent, &h);
-    if (r != CLI_OK) {
-      cli_write_char(cli, '\a');
-      done = True;
-    } else {
-      parent = h;
-    }
+  /* Walk the command tree through the complete words, exactly as execution would. */
+  cli_cmd_handle_t parent = CLI_CMD_ROOT;
+  bool args = False;
+  if (!done && (cli_walk_words(cli, argv, depth, &parent, &args) != CLI_OK || args)) {
+    /* Unknown word, or the word being typed is an argument: nothing to complete. */
+    cli_write_char(cli, '\a');
+    done = True;
   }
+  bool with_root = (depth == 0);
 
   if (!done) {
     /* Pass 1: count matches and compute the common prefix of the matched keywords
      * (name or alias — whichever the partial word actually matched). */
-    cli_len_t count = 0;
-    const char *first_text = NULL;
-    cli_len_t common = 0;
+    cli_complete_ctx_struct_t cc = {0, NULL, 0};
+    cli_foreach_match(cli, partial, parent, with_root, cli_complete_cb, &cc);
+
+    cli_len_t count = cc.count;
+    const char *first_text = cc.first_text;
+    cli_len_t common = cc.common;
     cli_len_t partial_len = (cli_len_t)strlen(partial);
-
-    for (cli_poolsize_t i = 0; i < cli->cmd_pool_size; i++) {
-      const cli_cmd_struct_t *cmd = &cli->cmd_pool[i];
-      const char *text = NULL;
-
-      if (cli_cmd_selectable(cli, cmd, parent) && !CLI_CMD_IS_HIDDEN(cmd)) {
-        text = cli_cmd_prefix_text(cmd, partial);
-      }
-      if (text == NULL) {
-        continue;
-      }
-
-      count++;
-      if (count == 1) {
-        first_text = text;
-        common = (cli_len_t)strlen(text);
-      } else {
-        cli_len_t j = 0;
-        while (j < common && tolower((int)(unsigned char)first_text[j]) ==
-                                 tolower((int)(unsigned char)text[j])) {
-          j++;
-        }
-        common = j;
-      }
-    }
 
     /* Keyword characters already typed. A plainly typed word (no quotes) whose case
      * differs from the keyword ("SH" for "show") is rewritten in the keyword's case. */
@@ -3661,10 +3735,41 @@ static void cli_tab_complete(cli_struct_t *cli) {
       /* Pass 2: list all candidates */
       cli_help_ctx_struct_t ctx = {False, False};
       CLI_WSTR(cli, CLI_CRLF);
-      cli_foreach_match(cli, partial, parent, cli_print_help_cb, &ctx);
+      cli_foreach_match(cli, partial, parent, with_root, cli_print_help_cb, &ctx);
       cli_redraw_line(cli);
     }
   }
+}
+
+/**
+ * @brief Match callback for Tab completion: counts the matches and narrows the
+ *        common prefix of the matched keywords.
+ *
+ * @param[in]     cli   Active CLI session (unused).
+ * @param[in]     h     Matched command (unused).
+ * @param[in]     text  Matched keyword.
+ * @param[in,out] raw   @c cli_complete_ctx_struct_t.
+ *
+ * @return Always @c true (continue iteration).
+ */
+static bool cli_complete_cb(cli_struct_t *cli, cli_cmd_handle_t h, const char *text, void *raw) {
+  cli_complete_ctx_struct_t *cc = (cli_complete_ctx_struct_t *)raw;
+
+  (void)cli;
+  (void)h;
+  cc->count++;
+  if (cc->count == 1) {
+    cc->first_text = text;
+    cc->common = (cli_len_t)strlen(text);
+  } else {
+    cli_len_t j = 0;
+    while (j < cc->common &&
+           tolower((int)(unsigned char)cc->first_text[j]) == tolower((int)(unsigned char)text[j])) {
+      j++;
+    }
+    cc->common = j;
+  }
+  return True;
 }
 #endif /* CLI_ENABLE_TAB_COMPLETION */
 
@@ -3703,10 +3808,10 @@ static void cli_show_help(cli_struct_t *cli) {
     show = False;
   }
 
-  cli_cmd_handle_t parent = cli_menu_context_parent(cli);
-  cli_cmd_handle_t h;
-  for (int d = 0; d < depth && show; d++) {
-    int8_t r = cli_resolve_one(cli, argv[d], parent, &h);
+  cli_cmd_handle_t parent = CLI_CMD_ROOT;
+  bool args = False;
+  if (show) {
+    int8_t r = cli_walk_words(cli, argv, depth, &parent, &args);
     if (r != CLI_OK) {
       if (r == CLI_ERR) {
         CLI_WSTR(cli, "\r\n% Unknown command.\r\n");
@@ -3715,19 +3820,20 @@ static void cli_show_help(cli_struct_t *cli) {
       }
       cli_redraw_line(cli);
       show = False;
-    } else {
-      parent = h;
     }
   }
 
   if (show) {
     /* "word?" lists the commands starting with "word" at this level; "word ?" (with a
-     * space) lists what may follow "word" — the partial is "" in that case. */
+     * space) lists what may follow "word" — the partial is "" in that case. Words after a
+     * command without subcommands are its arguments: only <cr> can be listed. */
     cli_help_ctx_struct_t ctx = {False, False};
     CLI_WSTR(cli, CLI_CRLF);
-    cli_foreach_match(cli, partial, parent, cli_print_help_cb, &ctx);
+    if (!args) {
+      cli_foreach_match(cli, partial, parent, depth == 0, cli_print_help_cb, &ctx);
+    }
     if (!ctx.any) {
-      if (partial[0] != '\0') {
+      if (partial[0] != '\0' && !args) {
         CLI_WSTR(cli, "% Unknown command.\r\n");
       } else {
         CLI_WSTR(cli, "  <cr>\r\n"); /* nothing more to type: the command is complete */
@@ -3967,12 +4073,13 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
   bool printable = False;
 
   if (cli != NULL && cli->session_state != CLI_SESSION_STOP) {
-    cli_touch_activity_internal(cli);
     rc = CLI_OK;
 
     if (cli_eol_pair(cli, byte)) {
-      /* Second byte of a CR LF / LF CR line ending: the line was already submitted. */
+      /* Second byte of a CR LF / LF CR line ending: the line was already submitted (and
+       * may have restarted the session, which must stay untouched). */
     } else {
+      cli_touch_activity_internal(cli);
       /* Escape / CSI sequences */
       bool esc_processed = cli_process_escape(cli, byte, True);
       if (!esc_processed) {
@@ -4272,19 +4379,7 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
     }
 
     if (rc == CLI_OK && argc > 0) {
-      cli_cmd_handle_t start_parent = CLI_CMD_INVALID;
-      cli_cmd_handle_t menu_parent = cli_menu_context_parent(cli);
-
-      bool has_match = cli_has_any_match(cli, argv[0], menu_parent);
-      if (menu_parent != CLI_CMD_ROOT && has_match) {
-        start_parent = menu_parent;
-      }
-
-      if (start_parent == CLI_CMD_INVALID) {
-        start_parent = cli_has_any_match(cli, argv[0], CLI_CMD_ROOT) ? CLI_CMD_ROOT : menu_parent;
-      }
-
-      rc = cli_execute_command(cli, argv, argc, 0, start_parent);
+      rc = cli_execute_command(cli, argv, argc, 0, cli_first_word_parent(cli, argv[0]));
     }
 
 #if CLI_ENABLE_HISTORY
@@ -4560,6 +4655,7 @@ static int8_t cli_auth_handle(cli_struct_t *cli, int byte) {
   if (cli_eol_pair(cli, byte)) {
     done = True; /* second byte of a CR LF / LF CR line ending */
   } else {
+    cli_touch_activity_internal(cli);
     /* Swallow escape sequences without acting on them: cursor keys, Delete and history
      * recall must not echo the hidden password or reveal previous commands. */
     done = cli_process_escape(cli, byte, False);
@@ -4627,12 +4723,64 @@ static bool cli_eol_pair(cli_struct_t *cli, int byte) {
   return pair;
 }
 
+/**
+ * @brief Empty the line editor.
+ *
+ * While commands execute, the head of @c input[] holds the line(s) they run and their
+ * @c argv strings point into it, so the bytes are left alone then: the editor only
+ * forgets the line. The executing line is cleared once it has finished
+ * (@c cli_submit_line(), @c cli_exec_area_run()).
+ *
+ * @param[in] cli  Active CLI session.
+ */
 static void cli_reset_input(cli_struct_t *cli) {
   if (cli != NULL) {
-    cli->input[0] = '\0';
+    if (cli->exec_depth == 0U) {
+      cli->input[0] = '\0';
+    }
     cli->input_len = 0;
     cli->cursor = 0;
   }
+}
+
+/**
+ * @brief Return every per-session state to its initial value (shared by
+ *        @c cli_start() and @c cli_restart_session()).
+ *
+ * Configuration (commands, users, callbacks, policies) is kept.
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_session_reset(cli_struct_t *cli) {
+  cli_nav_reset(cli);
+  cli_set_privilege(cli, CLI_PRIV_USER);
+  cli->esc_state = ESC_STATE_NORMAL;
+  cli->esc_param = 0;
+  cli_reset_input(cli);
+#if CLI_ENABLE_IDLE_TIMEOUT
+  cli->idle_armed = False; /* nothing to reset until the user types */
+#endif
+#if CLI_ENABLE_HISTORY
+  /* A restarted session may belong to a different user: do not expose old commands. */
+  (void)cli_clear_history(cli);
+#if CLI_HISTORY_INDEX_SELECTION
+  cli->history_replay = (cli_history_idx_t)-1;
+#endif
+#endif
+#if CLI_ENABLE_PIPE_FILTER
+  cli_filter_reset(cli);
+#endif
+#if CLI_HAS_LINE_BUFFER
+  cli->filter_line_buf_len = 0;
+#endif
+  cli->out_open = False;
+#if CLI_ENABLE_AUTH
+  cli->auth_state = CLI_AUTH_NONE;
+  cli->auth_attempts = 0;
+  cli->enable_attempts = 0;
+  cli->auth_lockout_started_ts = 0UL;
+  cli_auth_reset_work(cli);
+#endif
 }
 
 /**
@@ -4696,6 +4844,7 @@ static int8_t cli_nav_push(cli_struct_t *cli) {
   if (cli->nav_depth < (uint8_t)CLI_MAX_CONTEXT_DEPTH) {
     cli->nav_stack[cli->nav_depth].mode = cli->mode;
     cli->nav_stack[cli->nav_depth].context = cli->context;
+    cli->nav_stack[cli->nav_depth].privilege = cli->privilege;
     cli->nav_depth++;
     rc = CLI_OK;
   }
@@ -4704,16 +4853,24 @@ static int8_t cli_nav_push(cli_struct_t *cli) {
 }
 
 /**
- * @brief Return to the most recently saved navigation level.
- * @param[in] cli  Active CLI session (must have @c nav_depth > 0).
+ * @brief Return to the saved navigation level @p level, discarding it and every
+ *        level above it.
+ *
+ * Mode, submenu context and privilege are restored from the level's frame; the
+ * mode-change callback fires once if mode or privilege changed.
+ *
+ * @param[in] cli    Active CLI session.
+ * @param[in] level  Index of the frame to return to (< @c nav_depth).
  */
-static void cli_nav_pop(cli_struct_t *cli) {
-  cli_mode_t old_mode = cli->mode;
+static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
+  const cli_nav_frame_struct_t *frame = &cli->nav_stack[level];
+  bool changed = (frame->mode != cli->mode || frame->privilege != cli->privilege);
 
-  cli->nav_depth--;
-  cli->mode = cli->nav_stack[cli->nav_depth].mode;
-  cli->context = cli->nav_stack[cli->nav_depth].context;
-  if (cli->mode != old_mode) {
+  cli->nav_depth = level;
+  cli->mode = frame->mode;
+  cli->context = frame->context;
+  cli->privilege = frame->privilege;
+  if (changed) {
     cli_notify_mode_change(cli);
   }
 }

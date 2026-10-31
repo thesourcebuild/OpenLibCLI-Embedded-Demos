@@ -418,7 +418,13 @@ bool parse_f32(const char *s, float *out) {
 
   if (ok) {
     ok = parse_f64(s, &tmp);
-    ok = (ok && tmp <= (double)FLT_MAX && tmp >= -(double)FLT_MAX);
+    if (ok) {
+      /* Narrowing rounds to nearest: everything below FLT_MAX + half a float ulp (2^103)
+       * becomes a finite float, that bound and above becomes infinity. FLT_MAX is
+       * (2^24 - 1) * 2^104, so the half ulp is computed exactly. */
+      double limit = (double)FLT_MAX + (((double)FLT_MAX / 16777215.0) * 0.5);
+      ok = (tmp < limit && tmp > -limit);
+    }
   }
 
   if (out != NULL && ok) {
@@ -614,19 +620,16 @@ bool strtol_parse_float(const char *s, float *out) {
   }
 
   if (s != NULL && ok) {
-    errno = 0;
 #if defined(__AVR__) && (__SIZEOF_DOUBLE__ == __SIZEOF_FLOAT__)
     /* avr-libc has no strtof(); with a 32-bit double, strtod() is the float parser. */
     val = (float)strtod(s, &end);
 #else
     val = strtof(s, &end);
 #endif
-    ok = (end != s && *end == '\0');
-    if (ok && errno == ERANGE) {
-      /* Overflow returns ±HUGE_VALF (infinite) and fails; underflow yields 0 or a subnormal
-       * value and succeeds, like parse_f32(). */
-      ok = !isinf(val);
-    }
+    /* Overflow returns ±HUGE_VALF and "inf" / "nan" are parsed as such: none of them is a
+     * usable argument. Underflow yields 0 or a subnormal value and succeeds, like
+     * parse_f32(). */
+    ok = (end != s && *end == '\0' && isfinite(val));
   }
 
   if (out != NULL && ok) {
@@ -646,14 +649,9 @@ bool strtol_parse_double(const char *s, double *out) {
   }
 
   if (s != NULL && ok) {
-    errno = 0;
     val = strtod(s, &end);
-    ok = (end != s && *end == '\0');
-    if (ok && errno == ERANGE) {
-      /* Overflow returns ±HUGE_VAL (infinite) and fails; underflow yields 0 or a subnormal
-       * value and succeeds, like parse_f64(). */
-      ok = !isinf(val);
-    }
+    /* Overflow (±HUGE_VAL), "inf" and "nan" fail; underflow succeeds, like parse_f64(). */
+    ok = (end != s && *end == '\0' && isfinite(val));
   }
 
   if (out != NULL && ok) {
@@ -855,13 +853,12 @@ static uint8_t hex_value(char c) {
 static double scale_pow10(double value, long exp10, bool *ok) {
   while (exp10 > 0 && *ok) {
     long step = (exp10 > F64_EXACT_POW10_MAX) ? F64_EXACT_POW10_MAX : exp10;
-    double p = s_pow10[step];
-
-    if (value > DBL_MAX / p) {
+    /* Checked after the multiply: a pre-check against DBL_MAX / p is itself rounded and
+     * lets products that round up to infinity through. */
+    value *= s_pow10[step];
+    exp10 -= step;
+    if (isinf(value)) {
       *ok = false;
-    } else {
-      value *= p;
-      exp10 -= step;
     }
   }
 

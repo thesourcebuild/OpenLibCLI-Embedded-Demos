@@ -331,6 +331,10 @@ extern "C" {
 #define CLI_MAX_EXEC_DEPTH 2 /**< Max nesting of cli_exec() calls made from command handlers. */
 #endif
 
+#ifndef CLI_MAX_RX_BYTES_PER_TICK
+#define CLI_MAX_RX_BYTES_PER_TICK 64 /**< Max input bytes processed per cli_session_engine(). */
+#endif
+
 #ifndef CLI_ENABLE_TIME_SOURCE
 #define CLI_ENABLE_TIME_SOURCE (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK)
 #endif

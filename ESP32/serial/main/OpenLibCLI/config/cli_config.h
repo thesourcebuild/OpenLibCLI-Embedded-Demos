@@ -13,7 +13,7 @@
  *   Auth:     CLI_MAX_USERS 8, CLI_MAX_USERNAME_LEN 32, CLI_MAX_PASSWORD_LEN 64,
  *             CLI_MAX_ENABLE_SECRET_LEN 64
  *   Display:  CLI_MAX_PROMPT_LEN 64, CLI_MAX_BANNER_LEN 512, CLI_MAX_OUTPUT_BUF 1024
- *   Timing:   CLI_TRANSPORT_POLL_MS 1000, CLI_DEFAULT_IDLE_TIMEOUT_SEC 0
+ *   Timing:   CLI_TRANSPORT_POLL_MS 1000, CLI_DEFAULT_IDLE_TIMEOUT_SEC 10
  *   Features: CLI_ENABLE_HISTORY 1, TAB_COMPLETION 1, COMMAND_HELP 1, BANNER 1,
  *             AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
  *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 0
@@ -180,6 +180,13 @@ extern "C" {
 /**< Maximum commands executing at once (a command handler calling cli_exec() counts as a
        second level). Guards against unbounded recursion; costs no memory. */
 #define CLI_MAX_EXEC_DEPTH 4
+#endif
+
+#ifndef CLI_MAX_RX_BYTES_PER_TICK
+/**< Maximum input bytes one cli_session_engine() call processes. Bytes beyond it stay in the
+       transport for the next call, so a continuous input stream cannot keep the engine from
+       returning to the caller's loop. Costs no memory. */
+#define CLI_MAX_RX_BYTES_PER_TICK 1024
 #endif
 
 /*=======================================================================================
