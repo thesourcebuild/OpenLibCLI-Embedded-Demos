@@ -112,6 +112,10 @@ extern "C" {
 
 #include "cli_env_detect.h"
 
+/** @brief Internal: the per-line output buffer is needed by pipe filters and the
+ *         per-line print callback. */
+#define CLI_HAS_LINE_BUFFER (CLI_ENABLE_PIPE_FILTER || CLI_ENABLE_PRINT_TRANSPORT_CB)
+
 /*=======================================================================================
  * Public Defines
  *=======================================================================================*/
@@ -251,8 +255,9 @@ extern "C" {
  * @brief Behaviour when an idle timeout fires and no callback is set.
  */
 typedef enum {
-  CLI_IDLE_TIMEOUT_POLICY_CLOSE = 0,         /**< Terminate the session (default). */
-  CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION = 1, /**< Restart the banner / auth flow. */
+  CLI_IDLE_TIMEOUT_POLICY_CLOSE = 0,         /**< Terminate the session. */
+  CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION = 1, /**< Restart the banner / auth flow (default). Fires
+                                                once per idle period; re-armed by user input. */
   CLI_IDLE_TIMEOUT_POLICY_IGNORE = 2,        /**< Ignore idle timeout events. */
 } cli_idle_timeout_mode_enum_t;
 
@@ -399,26 +404,31 @@ typedef int8_t (*cli_cmd_handler_fn)(cli_struct_t *cli, const char *cmd, cli_arg
 /**
  * @brief Authentication callback.
  *
- * Called instead of the local user table when set.
+ * Called instead of the local user table when set. The session privilege is
+ * reset to @c CLI_PRIV_USER before the call; to grant a higher level, call
+ * @c cli_set_privilege(cli, ...) before returning @c CLI_OK. A privilege of
+ * @c CLI_PRIV_PRIVILEGED or above starts the session in @c CLI_MODE_ENABLE.
  *
+ * @param[in] cli       The CLI session being authenticated.
  * @param[in] username  Username string typed by the user.
  * @param[in] password  Password string typed by the user.
  *
  * @return @c CLI_OK to allow access, @c CLI_ERR_AUTH to deny.
  */
-typedef int8_t (*cli_auth_fn)(const char *username, const char *password);
+typedef int8_t (*cli_auth_fn)(cli_struct_t *cli, const char *username, const char *password);
 
 /**
  * @brief Enable-secret verification callback.
  *
  * Called instead of the static @c enable_privilege_secret string when set.
  *
- * @param[in] username  The authenticated username for this session.
+ * @param[in] cli       The CLI session requesting privilege.
+ * @param[in] username  The authenticated username for this session ("" without login).
  * @param[in] password  The password typed at the @c "Password:" prompt.
  *
  * @return @c CLI_OK to grant privilege, @c CLI_ERR_AUTH to deny.
  */
-typedef int8_t (*cli_enable_fn)(const char *username, const char *password);
+typedef int8_t (*cli_enable_fn)(cli_struct_t *cli, const char *username, const char *password);
 
 /**
  * @brief Mode / privilege change notification callback.
@@ -514,14 +524,20 @@ typedef void (*cli_print_fn)(cli_struct_t *cli, const char *text, cli_print_kind
  * Higher priority than @c cli_print_fn. When set, @c cli_print(),
  * @c cli_println(), and @c cli_error() forward the raw format string and
  * variadic argument list directly. The callback is responsible for all
- * formatting and output. Currently all internal processing (pipe filtering, @c print_transport_cb,
- * and transport writes) is skipped.
+ * formatting and output, including the trailing newline for
+ * @c CLI_PRINT_KIND_PRINTLN and @c CLI_PRINT_KIND_ERROR. All internal processing
+ * (pipe filtering, @c print_transport_cb, and transport writes) is skipped.
  *
  * @param[in] cli   The active CLI session.
+ * @param[in] kind  Identifies the calling function (@c cli_print_kind_enum_t).
  * @param[in] fmt   printf-style format string.
  * @param[in] ap    Variadic argument list.
+ *
+ * @return Number of characters produced (returned to the @c cli_print* caller),
+ *         or a negative value on error.
  */
-typedef void (*cli_print_v_fn)(cli_struct_t *cli, const char *fmt, va_list ap);
+typedef int (*cli_print_v_fn)(cli_struct_t *cli, cli_print_kind_enum_t kind, const char *fmt,
+                              va_list ap);
 
 /** @} */
 
@@ -637,6 +653,20 @@ struct cli_cmd_s {
 
 /** @} */
 
+/* Navigation Frame ---------------------------------------------------------------------*/
+
+/**
+ * @brief One saved navigation level (mode + submenu context).
+ *
+ * A frame is pushed whenever the session enters a new mode (@c cli_set_mode) or a
+ * submenu context, and popped by the built-in @c exit command, which restores the
+ * mode and context recorded in the frame.
+ */
+typedef struct {
+  cli_mode_t mode;          /**< Mode to restore when this level is left. */
+  cli_cmd_handle_t context; /**< Submenu context to restore, or @c CLI_CMD_ROOT. */
+} cli_nav_frame_struct_t;
+
 /* CLI Session Instance -----------------------------------------------------------------*/
 
 /** @defgroup CLI_Session CLI Session Structure
@@ -665,6 +695,9 @@ struct cli_s {
   /* --- command context stack (submenu navigation)
    * ---------------------------------- */
   cli_cmd_handle_t context; /**< Current submenu context handle, or @c CLI_CMD_ROOT. */
+  cli_nav_frame_struct_t nav_stack[CLI_MAX_CONTEXT_DEPTH]; /**< Saved mode/context levels;
+                                                              empty at the login floor. */
+  uint8_t nav_depth; /**< Number of valid entries in @c nav_stack[]. */
 
   /* --- hostname / prompt
    * ----------------------------------------------------------- */
@@ -685,12 +718,12 @@ struct cli_s {
 
   /* --- session state
    * --------------------------------------------------------------- */
-  cli_mode_t mode;       /**< Current CLI mode index. */
-  cli_mode_t mode_prev;  /**< Previous mode (used when returning from enable/config). */
-  cli_mode_t mode_login; /**< Floor mode exiting at this level closes the session. */
+  cli_mode_t mode; /**< Current CLI mode index. */
   /* --- mode names for prompt suffix
    * ------------------------------------------------ */
 #if CLI_ENABLE_MODE_NAMES
+  cli_mode_t mode_name_ids[CLI_MAX_MODES]; /**< Mode value owning each @c mode_names[] slot;
+                                              @c CLI_MODE_ANY marks a free slot. */
   char mode_names[CLI_MAX_MODES][CLI_MAX_MODE_NAME_LEN]; /**< Display names shown inside the
                                                             prompt brackets. */
 #endif
@@ -717,10 +750,13 @@ struct cli_s {
   char auth_username[CLI_MAX_USERNAME_LEN];  /**< Username captured before password entry. */
   cli_priv_t user_privileges[CLI_MAX_USERS]; /**< Privilege level per local user. */
   cli_len_t num_users;     /**< Number of entries currently in the local user table. */
-  cli_len_t auth_attempts; /**< Number of failed login attempts in this auth cycle. */
+  cli_len_t auth_attempts;   /**< Number of failed login attempts in this auth cycle. */
+  cli_len_t enable_attempts; /**< Number of consecutive failed enable-secret attempts. */
   cli_auth_failure_mode_enum_t auth_failure_mode; /**< What to do when max attempts are exceeded. */
   cli_time_t auth_lockout_seconds;    /**< Lockout duration in seconds (0 = immediate). */
   cli_time_t auth_lockout_started_ts; /**< Timestamp when the current lockout began. */
+  cli_auth_state_enum_t auth_resume_state; /**< State restored after the enable prompt or a
+                                              lockout; @c CLI_AUTH_USERNAME means re-login. */
   bool require_auth;                  /**< True when the session requires login before running
                                          commands. */
   cli_auth_fn authorization_cb;       /**< Custom auth callback; overrides the local user table. */
@@ -729,8 +765,6 @@ struct cli_s {
    * ------------------------------------------------------ */
   char enable_privilege_secret[CLI_MAX_ENABLE_SECRET_LEN]; /**< Static enable password
                                                     (compared on enable). */
-  cli_priv_t enable_privilege_prev;                        /**< Privilege level saved before the
-                                                               enable-secret prompt started. */
   cli_enable_fn enable_privilege_cb; /**< Custom enable-secret callback; overrides the
                               static secret. */
 
@@ -757,6 +791,7 @@ struct cli_s {
   cli_idle_timeout_mode_enum_t idle_timeout_policy; /**< Fallback behaviour when no
                                                 idle callback is set. */
   cli_idle_timeout_fn idle_timeout_cb;              /**< Called when the idle timer expires. */
+  bool idle_expired; /**< Set after a reset-session timeout; cleared by the next user activity. */
 #endif
 
 #if CLI_ENABLE_PERIODIC_CALLBACK
@@ -784,31 +819,44 @@ struct cli_s {
                                              / begin filters. */
   cli_len_t filter_count;                 /**< Line count accumulated by the @c count filter. */
   bool filter_begin_found;                /**< True once the begin-pattern has been seen. */
+#endif                                    /* CLI_ENABLE_PIPE_FILTER */
 
-  /* --- per-line output buffer
+#if CLI_HAS_LINE_BUFFER
+  /* --- per-line output buffer (pipe filter / per-line callback)
    * ------------------------------------------------------ */
-  char filter_line_buf[CLI_MAX_OUTPUT_BUF]; /**< Accumulates partial lines for filter
-                                        processing. */
+  char filter_line_buf[CLI_MAX_OUTPUT_BUF]; /**< Accumulates partial output lines. */
   cli_len_t filter_line_buf_len; /**< Number of bytes currently in @c filter_line_buf[]. */
-#endif                           /* CLI_ENABLE_PIPE_FILTER */
+#endif
+
+  /* --- command execution
+   * ------------------------------------------------------ */
+  uint8_t exec_depth; /**< Commands currently executing (> 1 = nested @c cli_exec()). */
+  cli_len_t exec_used; /**< While a command runs: bytes of @c input[] holding the executing
+                          lines; @c cli_exec() places its line after them. */
+  bool out_open;       /**< Command output so far did not end with a newline. */
+#if CLI_ENABLE_HISTORY && CLI_HISTORY_INDEX_SELECTION
+  cli_history_idx_t history_replay; /**< Ring slot recalled by @c history N, or -1. */
+#endif
 
   /* --- ANSI / VT100 escape state machine
    * ------------------------------------------ */
   uint8_t esc_state; /**< Current escape-sequence parser state. */
-  int esc_param;     /**< CSI numeric parameter accumulated as integer. */
-  bool saw_cr;       /**< True after a bare @c \\r, used to swallow the subsequent @c
-                        \\n. */
+  int esc_param;     /**< First CSI numeric parameter (saturated). */
+  uint8_t eol_prev;  /**< Line-ending byte (CR or LF) that just submitted a line, else 0; the
+                        complementary byte of a CR LF / LF CR pair is then swallowed. */
 
-  bool ansi_supported;        /**< Terminal supports ANSI/VT100 escape sequences (default true). */
-  bool suppress_help_newline; /**< Consume one line ending immediately after inline @c ?. */
+  bool ansi_supported; /**< Terminal supports ANSI/VT100 escape sequences (default true). */
+  bool tx_error;       /**< A transport write failed; the session ends on the next tick. */
 
   /* --- arbitrary user payload
    * ------------------------------------------------------ */
   void *user_data; /**< Application-defined pointer; set/get via
                       cli_set_userdata / cli_get_userdata. */
 
+#if CLI_ENABLE_PRINT_TRANSPORT_CB
   /**< Per-line output intercept callback. */
   cli_print_transport_fn print_transport_cb;
+#endif
 
   /**< Formatted-text output override (receives text + kind; NULL = disabled). */
   cli_print_fn print_cb;
@@ -853,10 +901,13 @@ struct cli_s {
  * @brief Initialise a CLI session with user-provided memory.
  *
  * The caller supplies both the @c cli_struct_t instance and the command pool array.
- * Built-in commands (exit, help, enable, ...) are registered automatically.
+ * The session owns the pool: every slot is cleared here, so commands must be
+ * registered after this call (call @c cli_add_builtin_cmds() for the built-ins).
+ * Re-initialising a session with the same pool therefore starts from an empty
+ * command tree. Does nothing if @p cli or @p transport is @c NULL.
  *
  * @param[out] cli         Zeroed and initialised session.
- * @param[in]  hostname    Initial hostname string shown in the prompt.
+ * @param[in]  hostname    Initial hostname string shown in the prompt (@c NULL = "cli").
  * @param[in]  transport   Pointer to a filled @c cli_transport_struct_t; contents are
  *                         copied.
  * @param[in]  platform    Optional platform services; pass @c NULL for host OS
@@ -900,12 +951,18 @@ OPENLIBCLI_API cli_session_state_enum_t cli_get_session_state(const cli_struct_t
 /**
  * @brief Restart the session flow from banner â†’ auth (optional) â†’ run.
  *
+ * Starts a fresh logical session: mode, privilege, submenu navigation, line
+ * editor state, and command history are reset.
+ *
  * @param[in] cli  Active CLI session.
  */
 OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli);
 
 /**
  * @brief Request an authentication flow for the current session.
+ *
+ * Drops the session to @c CLI_MODE_EXEC / @c CLI_PRIV_USER, clears command
+ * history, and shows the @c "Username:" prompt.
  *
  * @param[in] cli  Active CLI session.
  */
@@ -931,7 +988,7 @@ OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
  * @brief Set the session hostname string (appears in the prompt).
  *
  * @param[in] cli       Active CLI session.
- * @param[in] hostname  New hostname string.
+ * @param[in] hostname  New hostname string (@c NULL clears it).
  */
 OPENLIBCLI_API void cli_set_hostname(cli_struct_t *cli, const char *hostname);
 
@@ -939,25 +996,35 @@ OPENLIBCLI_API void cli_set_hostname(cli_struct_t *cli, const char *hostname);
  * @brief Set the MOTD banner text.
  *
  * @param[in] cli     Active CLI session.
- * @param[in] banner  Banner string to emit at session start.
+ * @param[in] banner  Banner string to emit at session start (@c NULL clears it).
  */
 OPENLIBCLI_API void cli_set_banner(cli_struct_t *cli, const char *banner);
 
 /**
  * @brief Set the enable-mode secret (privileged exec password).
  *
+ * The secret is stored in plain text inside the session; use
+ * @c cli_set_enable_privilege_cb() to verify against a hash instead.
+ *
  * @param[in] cli     Active CLI session.
  * @param[in] secret  Plaintext secret string, or @c NULL to clear it.
+ *
+ * @return @c CLI_OK, or @c CLI_ERR if @p cli is @c NULL or @p secret does not fit in
+ *         @c CLI_MAX_ENABLE_SECRET_LEN (the previous secret is kept; a truncated
+ *         secret would accept a shorter password).
  */
-OPENLIBCLI_API void cli_set_enable_secret(cli_struct_t *cli, const char *secret);
+OPENLIBCLI_API int8_t cli_set_enable_secret(cli_struct_t *cli, const char *secret);
 
 /**
  * @brief Set a custom enable-secret verification callback. Register a callback to verify the
  * enable-mode secret dynamically.
  *
  * When set, the callback is called with the entered secret instead of
- * comparing it against the static @c enable_privilege_secret field.When set, overrides the static
- * @c enable_privilege_secret string. Pass @c NULL to revert to static string comparison.
+ * comparing it against the static @c enable_privilege_secret field. Pass @c NULL to
+ * revert to static string comparison.
+ *
+ * Failed attempts are counted per session; after three consecutive failures the
+ * configured @c cli_auth_failure_mode_enum_t is applied (close or lock out).
  *
  * @param[in] cli  Active CLI session.
  * @param[in] fn   Enable verification callback, or @c NULL to use static
@@ -1036,15 +1103,22 @@ OPENLIBCLI_API void cli_set_mode_change_cb(cli_struct_t *cli, cli_mode_fn fn);
 /**
  * @brief Assign a display name for a mode (shown inside the prompt brackets).
  *
+ * Any mode value may be named, including user-defined modes at or above
+ * @c CLI_MODE_USER_BASE. Up to @c CLI_MAX_MODES modes can carry a name at once;
+ * an empty (or @c NULL) name removes the mode's entry.
+ *
  * @code
  *   cli_set_mode_name(cli, CLI_MODE_CONFIG, "config");
  * @endcode
  *
  * @param[in] cli   Active CLI session.
- * @param[in] mode  Mode index to name.
+ * @param[in] mode  Mode value to name (not @c CLI_MODE_ANY).
  * @param[in] name  Display string (e.g. @c "config").
+ *
+ * @return @c CLI_OK, @c CLI_ERR on invalid arguments, or @c CLI_ERR_NOMEM when
+ *         @c CLI_MAX_MODES names are already stored.
  */
-OPENLIBCLI_API void cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, const char *name);
+OPENLIBCLI_API int8_t cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, const char *name);
 
 /**
  * @brief Override the monotonic time source used by idle-timeout checks.
@@ -1085,6 +1159,10 @@ OPENLIBCLI_API void cli_set_idle_timeout(cli_struct_t *cli, uint32_t seconds);
 /**
  * @brief Set the idle timeout and a callback invoked when it expires.
  *
+ * The callback replaces the idle-timeout policy: it is invoked on every expiry
+ * regardless of @c cli_set_idle_timeout_mode(). Returning @c CLI_OK re-arms the
+ * timer; any other value ends the session with that code.
+ *
  * @param[in] cli       Active CLI session.
  * @param[in] seconds   Timeout value; 0 disables timeout.
  * @param[in] callback  Callback invoked on expiry.
@@ -1094,6 +1172,9 @@ OPENLIBCLI_API void cli_set_idle_timeout_cb(cli_struct_t *cli, uint32_t seconds,
 
 /**
  * @brief Set idle-timeout behaviour when no expiry callback is registered.
+ *
+ * The default is @c CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION, which restarts the
+ * session once and then waits for user input before the timer can fire again.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  One of @c CLI_IDLE_TIMEOUT_POLICY_CLOSE, @c
@@ -1160,12 +1241,16 @@ OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli);
 /**
  * @brief Add a username / password / privilege entry to the local static table.
  *
+ * Passwords are kept in plain text in the session and compared in constant
+ * time. To verify against hashed credentials, use @c cli_set_authorization_cb().
+ *
  * @param[in] cli        Active CLI session.
- * @param[in] username   Username string.
- * @param[in] password   Password string.
+ * @param[in] username   Username string (non-empty, shorter than @c CLI_MAX_USERNAME_LEN).
+ * @param[in] password   Password string (shorter than @c CLI_MAX_PASSWORD_LEN).
  * @param[in] privilege  @c CLI_PRIV_USER or @c CLI_PRIV_PRIVILEGED.
  *
- * @return @c CLI_OK on success, @c CLI_ERR_NOMEM if the table is full.
+ * @return @c CLI_OK on success, @c CLI_ERR on invalid / too long credentials,
+ *         @c CLI_ERR_NOMEM if the table is full.
  */
 OPENLIBCLI_API int8_t cli_add_user(cli_struct_t *cli, const char *username, const char *password,
                                    cli_priv_t privilege);
@@ -1174,7 +1259,8 @@ OPENLIBCLI_API int8_t cli_add_user(cli_struct_t *cli, const char *username, cons
  * @brief Set a custom authentication callback.
  *
  * When set, the callback is invoked during the login sequence instead of
- * the built-in local user-table lookup.
+ * the built-in local user-table lookup. The callback grants privilege by
+ * calling @c cli_set_privilege() on the session it receives (see @c cli_auth_fn).
  *
  * @param[in] cli  Active CLI session.
  * @param[in] fn   Authentication callback.
@@ -1192,12 +1278,15 @@ OPENLIBCLI_API void cli_set_authorization_cb(cli_struct_t *cli, cli_auth_fn fn);
 OPENLIBCLI_API void cli_require_authorization(cli_struct_t *cli, bool require);
 
 /**
- * @brief Choose behaviour when authentication attempts are exhausted.Set the behaviour when
- * authentication fails.
+ * @brief Choose behaviour when authentication attempts are exhausted.
+ *
+ * Applies after three failed logins and after three consecutive failed enable
+ * secrets. @c CLI_AUTH_FAILURE_MODE_LOCKOUT needs a time source; without one
+ * (and with a non-zero lockout duration) the session is closed instead, because
+ * the lockout could never expire. Input received during a lockout is discarded.
  *
  * @param[in] cli   Active CLI session.
- * @param[in] mode  One of the @c cli_auth_failure_mode_t values.
- * CLI_AUTH_FAILURE_MODE_LOCKOUT.
+ * @param[in] mode  One of the @c cli_auth_failure_mode_enum_t values.
  */
 OPENLIBCLI_API void cli_set_auth_failure_mode(cli_struct_t *cli, cli_auth_failure_mode_enum_t mode);
 
@@ -1222,11 +1311,19 @@ OPENLIBCLI_API void cli_set_auth_lockout_duration(cli_struct_t *cli, uint32_t se
 /**
  * @brief Register a command in a session's per-instance command pool.
  *
+ * A name (or alias) may appear only once among the children of @p parent whose
+ * modes overlap (same mode, or either one @c CLI_MODE_ANY), compared without
+ * regard to case; otherwise the command could never be selected.
+ *
+ * On AVR, @p name and @p help must be program-memory strings (@c CLI_STR() /
+ * @c cli_register_command()); the same applies to alias names.
+ *
  * @param[in] cli         Active CLI session.
- * @param[in] parent      Handle of the parent command node, or
+ * @param[in] parent      Handle of an existing command node, or
  *                        @c CLI_CMD_ROOT for a root-level command.
- * @param[in] name        Command keyword string (must not be @c NULL or empty). Single keyword (no
- * spaces, no @c ?).
+ * @param[in] name        Command keyword string: non-empty, shorter than
+ *                        @c CLI_MAX_NAME_LEN, and free of whitespace, control
+ *                        characters, @c ?, @c | and @c ".
  * @param[in] callback    Handler invoked when the command is executed, or
  *                        @c NULL for pure sub-menu nodes.
  * @param[in] privilege   CLI mode in which the command is visible
@@ -1239,7 +1336,8 @@ OPENLIBCLI_API void cli_set_auth_lockout_duration(cli_struct_t *cli, uint32_t se
  *                        or @c NULL for no help text.
  *
  * @return A handle (â‰¥ 0) usable as @p parent for sub-commands, or
- *         @c CLI_CMD_INVALID on error (pool full, name too long, etc.).
+ *         @c CLI_CMD_INVALID on error (pool full, invalid / too long / duplicate
+ *         name, unknown parent).
  */
 OPENLIBCLI_API cli_cmd_handle_t cli_add_command(cli_struct_t *cli, cli_cmd_handle_t parent,
                                                 const char *name, cli_cmd_handler_fn callback,
@@ -1292,9 +1390,10 @@ OPENLIBCLI_API cli_cmd_handle_t cli_add_command_duplicate(cli_struct_t *cli,
  *
  * @param[in] cli         Active CLI session.
  * @param[in] handle      Handle of the target command. Handle returned by @c cli_add_command.
- * @param[in] alias_name  Alias keyword to attach. Additional keyword (no spaces, no @c ?).
+ * @param[in] alias_name  Alias keyword to attach; same rules as a command name.
  *
- * @return @c CLI_OK, @c CLI_ERR (bad handle), or @c CLI_ERR_NOMEM (slots full).
+ * @return @c CLI_OK, @c CLI_ERR (bad handle, invalid name, or the name is already used by
+ *         an overlapping sibling), or @c CLI_ERR_NOMEM (slots full).
  */
 OPENLIBCLI_API int8_t cli_cmd_add_alias(cli_struct_t *cli, cli_cmd_handle_t handle,
                                         const char *alias_name);
@@ -1304,9 +1403,11 @@ OPENLIBCLI_API int8_t cli_cmd_add_alias(cli_struct_t *cli, cli_cmd_handle_t hand
  * @brief Remove a command node from the command tree.
  *
  * Zeroes the pool slot and decrements the pool counter. Child nodes are left
- * in place (they become orphans); use @c cli_remove_command_recursive to
- * remove a subtree.
- * Children are not deleted, but become unreachable through normal traversal.
+ * in place but detached (their parent becomes @c CLI_CMD_INVALID), so they stay
+ * unreachable even if the freed slot is reused by a new command; use
+ * @c cli_remove_command_recursive to remove a subtree. A session currently inside
+ * the removed submenu, or inside any submenu below it, is moved to the removed
+ * node's parent.
  *
  * @param[in] cli     Active CLI session.
  * @param[in] handle  Handle of the command to remove. Handle returned by @c cli_add_command.
@@ -1331,8 +1432,8 @@ OPENLIBCLI_API int8_t cli_remove_command_recursive(cli_struct_t *cli, cli_cmd_ha
 /**
  * @brief Mark a command as hidden so it is excluded from help listings.
  *
- * Hidden commands are still executable if typed exactly; they are simply
- * omitted from @c ? and tab-completion output.
+ * Hidden commands are still executable if their full name (or alias) is typed;
+ * they are omitted from @c ?, @c help, prefix matching and tab-completion.
  *
  * @param[in] cli     Active CLI session.
  * @param[in] handle  Handle of the command to hide.
@@ -1398,11 +1499,25 @@ OPENLIBCLI_API void cli_tick_stats_reset(cli_struct_t *cli);
  * pipeline (trim, tokenize, resolve, callback), and resets the input
  * buffer.  Output is still sent through the active transport.
  *
+ * Arguments containing spaces, @c | or @c ? are written in double quotes
+ * (@c "a b"); inside quotes @c \\" and @c \\\\ escape a quote and a backslash.
+ *
+ * The command is copied into the free part of the session's input buffer, after
+ * the line being edited (or a password being typed) and after the lines of any
+ * commands still executing, so none of those are disturbed and no extra buffer
+ * is used. The command is not added to the session history. It may be called
+ * from inside a command handler; such a nested command's output flows through
+ * the outer command's pipe filter, so the nested line itself may not contain a
+ * filter. Nesting deeper than @c CLI_MAX_EXEC_DEPTH is refused.
+ *
  * @param[in] cli  Active CLI session.
  * @param[in] cmd  NUL-terminated command string (e.g. @c "show version").
  *
- * @return @c CLI_OK on success, @c CLI_ERR on failure,
- *         @c CLI_ERR_QUIT if the session ended, @c CLI_ERR_AMBIG on ambiguity.
+ * @return @c CLI_OK on success, @c CLI_ERR on failure (including nesting too deep),
+ *         @c CLI_ERR_QUIT if the session ended, @c CLI_ERR_AMBIG on ambiguity,
+ *         @c CLI_ERR_NOMEM if @p cmd does not fit in the free part of the input
+ *         buffer (at most @c CLI_MAX_INPUT_LEN - 1 characters; less while a line is
+ *         being typed or commands are executing) — nothing is executed then.
  */
 OPENLIBCLI_API int8_t cli_exec(cli_struct_t *cli, const char *cmd);
 
@@ -1410,14 +1525,16 @@ OPENLIBCLI_API int8_t cli_exec(cli_struct_t *cli, const char *cmd);
  * @brief Execute a command from pre-parsed argument tokens.
  *
  * Joins @p argv[0] .. argv[argc-1] with spaces and passes the result
- * to @c cli_exec().  A thin convenience wrapper for callers that already
- * have tokenized input.
+ * to @c cli_exec(). Arguments that are empty or contain whitespace, quotes,
+ * @c | or @c ? are quoted, so each entry reaches the handler as exactly one
+ * token.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] argv  Argument vector (argv[0] = command name).
  * @param[in] argc  Number of entries in @p argv.
  *
- * @return Same as @c cli_exec().
+ * @return Same as @c cli_exec(); @c CLI_ERR_NOMEM if the joined line does not
+ *         fit in @c CLI_MAX_INPUT_LEN (nothing is executed).
  */
 OPENLIBCLI_API int8_t cli_exec_argv(cli_struct_t *cli, const char *const *argv, cli_argc_t argc);
 
@@ -1432,14 +1549,22 @@ OPENLIBCLI_API int8_t cli_exec_argv(cli_struct_t *cli, const char *const *argv, 
 /**
  * @brief Switch the session to a different CLI mode.
  *
- * Saves the previous mode in @c cli->mode_prev and fires the
- * @c on_mode_change callback if registered.
+ * Navigation is stack based:
+ *  - If @p mode is already on the navigation stack (an enclosing level), the
+ *    session returns to that level, restoring its submenu context.
+ *  - Otherwise the current mode and context are pushed, so a later @c exit
+ *    returns here, and @p mode becomes active.
+ *
+ * The @c on_mode_change callback fires when the mode actually changes.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  New mode value (application-defined; use predefined
  *                  @c CLI_MODE_* constants or custom values).
+ *
+ * @return @c CLI_OK, @c CLI_ERR if @p cli is @c NULL, or @c CLI_ERR_NOMEM when the
+ *         navigation stack (@c CLI_MAX_CONTEXT_DEPTH) is full (mode unchanged).
  */
-OPENLIBCLI_API void cli_set_mode(cli_struct_t *cli, cli_mode_t mode);
+OPENLIBCLI_API int8_t cli_set_mode(cli_struct_t *cli, cli_mode_t mode);
 
 /**
  * @brief Set the session privilege level.
@@ -1454,19 +1579,20 @@ OPENLIBCLI_API void cli_set_mode(cli_struct_t *cli, cli_mode_t mode);
 OPENLIBCLI_API void cli_set_privilege(cli_struct_t *cli, cli_priv_t privilege);
 
 /**
- * @brief Return the current session privilege level.
+ * @brief Return the current session mode.
  *
  * @param[in] cli  Active CLI session.
- * @return Current privilege value, or @c -1 if @p cli is @c NULL.
+ * @return Current mode value, or @c -1 if @p cli is @c NULL.
  */
 OPENLIBCLI_API cli_mode_t cli_get_mode(const cli_struct_t *cli);
 
 /**
  * @brief Get the current privilege level.
  *
- * @param[in] cli  Session to query; @c NULL returns -1.
+ * @param[in] cli  Session to query.
  *
- * @return Current privilege level.
+ * @return Current privilege level, or @c CLI_PRIV_USER (the lowest level) if
+ *         @p cli is @c NULL.
  */
 OPENLIBCLI_API cli_priv_t cli_get_privilege(const cli_struct_t *cli);
 
@@ -1482,10 +1608,12 @@ OPENLIBCLI_API cli_priv_t cli_get_privilege(const cli_struct_t *cli);
 /**
  * @brief Formatted print without an automatic trailing newline.
  *
- * Formats the string using @c vsnprintf, then feeds each character through
- * the per-line output buffer.  When a @c \\n is encountered the accumulated
- * line is passed to the active pipe filter; lines that pass are sent to the
- * transport (or the @c print_transport_cb callback if set).
+ * Formats the string using @c vsnprintf. While a pipe filter is active or a
+ * @c print_transport_cb is set, output is collected per line: when a @c \\n is
+ * encountered the accumulated line is passed to the filter and lines that pass
+ * are sent to the transport (or @c print_transport_cb). Otherwise text is written
+ * to the transport immediately. A partial line left at the end of a command is
+ * emitted when the command finishes; use @c cli_print_flush() to emit it earlier.
  *
  * When either @c print_cb or @c print_cb_v is set, all internal processing
  * is bypassed and the formatted text (or raw fmt+va_list) is forwarded to
@@ -1556,23 +1684,29 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...);
  * terminated by @c \n, this function null-terminates the buffered text,
  * emits it as a complete logical line through the active output path, and
  * clears the buffer.  If no partial line is pending, the function does
- * nothing.
+ * nothing. Called automatically at the end of every command.
  *
- * @param[in] cli  Active CLI session.
+ * @param[in] cli  Active CLI session (@c NULL is a no-op).
  */
 OPENLIBCLI_API void cli_print_flush(cli_struct_t *cli);
 
+#if CLI_ENABLE_PRINT_TRANSPORT_CB
 /**
  * @brief Register a per-line print callback.
  *
  * When set, every line emitted by @c cli_print, @c cli_println, and
  * @c cli_error is delivered to @p cb instead of the transport.  Pass
- * @c NULL to restore default transport-based output.
+ * @c NULL to restore default transport-based output. Lines longer than
+ * @c CLI_MAX_OUTPUT_BUF - 1 characters are delivered in several pieces.
+ * The callback must not call @c cli_print / @c cli_println / @c cli_error itself
+ * (the line it receives lives in the session's line buffer).
+ * Available when @c CLI_ENABLE_PRINT_TRANSPORT_CB is set.
  *
  * @param[in] cli  Active CLI session.
  * @param[in] cb   Callback to install, or @c NULL to restore default output.
  */
 OPENLIBCLI_API void cli_set_print_transport_cb(cli_struct_t *cli, cli_print_transport_fn cb);
+#endif
 
 /**
  * @brief Register a formatted-text output override.
@@ -1652,8 +1786,10 @@ OPENLIBCLI_API void cli_add_builtin_cmds(cli_struct_t *cli);
 /**
  * @brief Built-in @c exit command handler.
  *
- * Pops one context level, demotes the mode, or ends the session depending
- * on the current state and the configured @c exit_root_policy.
+ * Pops one navigation level, restoring the mode and submenu context that were
+ * active before it was entered (leaving @c CLI_MODE_ENABLE also drops privilege
+ * to @c CLI_PRIV_USER). At the login floor (no saved level) the configured
+ * @c exit_root_policy applies.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] cmd   Command string (unused).
@@ -1698,7 +1834,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
 
 /**
  * @brief Built-in @c disable command handler drops to user privilege and exec
- * mode.
+ * mode, which becomes the new login floor (a following @c exit ends the session).
  * @param[in] cli   Active CLI session.
  * @param[in] cmd   Command string (unused).
  * @param[in] argc  Argument count (unused).
@@ -1710,7 +1846,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_disable(cli_struct_t *cli, const char *cmd
 
 /**
  * @brief Built-in @c end command handler returns to privileged exec from any
- * config mode.
+ * config mode (and any submenu entered from it).
  * @param[in] cli   Active CLI session.
  * @param[in] cmd   Command string (unused).
  * @param[in] argc  Argument count (unused).

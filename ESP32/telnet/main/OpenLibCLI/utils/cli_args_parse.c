@@ -32,6 +32,15 @@
 /** @brief Maximum decimal digits in a uint64_t without overflow. */
 #define U64_MAX_DIGITS (20U)
 
+/** @brief parse_f64: largest mantissa that can take one more decimal digit without overflow. */
+#define F64_MANT_LIMIT ((UINT64_MAX - 9ULL) / 10ULL)
+
+/** @brief parse_f64: exponent magnitude beyond which every double over/underflows anyway. */
+#define F64_EXP_SATURATE (100000L)
+
+/** @brief Largest power of ten that is exactly representable in a double. */
+#define F64_EXACT_POW10_MAX (22)
+
 /*=======================================================================================
  * Private Macros
  *=======================================================================================*/
@@ -59,6 +68,12 @@ static const char s_hex_digit[16] = {
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
 };
 
+/** @brief Exact powers of ten 10^0 .. 10^22 used to scale parsed mantissas. */
+static const double s_pow10[F64_EXACT_POW10_MAX + 1] = {
+    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
+    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+};
+
 /*=======================================================================================
  * Private Function Prototypes
  *=======================================================================================*/
@@ -67,6 +82,8 @@ static bool is_dec_digit(char c);
 static bool is_hex_digit(char c);
 static uint8_t dec_value(char c);
 static uint8_t hex_value(char c);
+static double scale_pow10(double value, long exp10, bool *ok);
+static bool strtol_unsigned_text_ok(const char *s);
 
 /*=======================================================================================
  * Public Functions — hand-rolled integer parsing
@@ -113,7 +130,8 @@ bool parse_i64(const char *s, int64_t *out) {
       s++;
     }
 
-    /* Sign-only input is accepted as zero for compatibility with existing API tests. */
+    /* At least one digit must follow the optional sign ("-" alone is not a number). */
+    ok = is_dec_digit(*s);
   }
 
   if (s != NULL && ok) {
@@ -292,120 +310,103 @@ bool parse_i8(const char *s, int8_t *out) {
 }
 
 bool parse_f64(const char *s, double *out) {
-  double sign = 1.0;
-  uint64_t int_part = 0;
-  int int_digits = 0;
-  uint64_t frac_part = 0;
-  int frac_digits = 0;
-  int exponent = 0;
+  bool neg = false;
+  uint64_t mant = 0;    /* Significant digits (up to 19-20). */
+  long digits = 0;      /* Mantissa digits seen (integer + fraction). */
+  long dec_exp = 0;     /* Power of ten implied by the digits kept in mant. */
+  long exponent = 0;    /* Explicit e/E exponent (saturated). */
+  bool dropped = false; /* A digit beyond the mantissa precision was seen (and rounded). */
   bool ok = (s != NULL && out != NULL);
 
   if (ok) {
     ok = (s[0] != '\0');
   }
 
-  if (s != NULL && ok) {
+  if (ok) {
     if (*s == '-') {
-      sign = -1.0;
+      neg = true;
       s++;
     } else if (*s == '+') {
       s++;
     } else {
       /* No sign. */
     }
-  }
 
-  ok = (s != NULL && ok && *s != '\0');
-
-  while (s != NULL) {
-    if (!is_dec_digit(*s) || !ok) {
-      break;
-    }
-    uint8_t digit = dec_value(*s);
-    uint64_t next = (int_part * 10ULL) + (uint64_t)digit;
-    ok = (next >= int_part);
-    if (ok) {
-      int_part = next;
-      int_digits++;
+    /* Integer digits: keep as many as fit in mant, scale for the rest. The first digit
+     * that does not fit rounds the kept mantissa (half up). */
+    while (is_dec_digit(*s)) {
+      uint8_t d = dec_value(*s);
+      if (!dropped && mant <= F64_MANT_LIMIT) {
+        mant = (mant * 10ULL) + (uint64_t)d;
+      } else {
+        if (!dropped) {
+          dropped = true;
+          mant += (d >= 5U) ? 1ULL : 0ULL;
+        }
+        dec_exp++;
+      }
+      digits++;
       s++;
     }
-  }
 
-  if (s != NULL && ok && *s == '.') {
-    s++;
-    while (is_dec_digit(*s) && ok) {
-      uint8_t digit = dec_value(*s);
-      uint64_t next = (frac_part * 10ULL) + (uint64_t)digit;
-      ok = (next >= frac_part);
-      if (ok) {
-        frac_part = next;
-        frac_digits++;
+    /* Fraction digits: beyond the mantissa precision they only round the last kept digit. */
+    if (*s == '.') {
+      s++;
+      while (is_dec_digit(*s)) {
+        uint8_t d = dec_value(*s);
+        if (!dropped && mant <= F64_MANT_LIMIT) {
+          mant = (mant * 10ULL) + (uint64_t)d;
+          dec_exp--;
+        } else if (!dropped) {
+          dropped = true;
+          mant += (d >= 5U) ? 1ULL : 0ULL;
+        } else {
+          /* Further digits are below the precision of a double. */
+        }
+        digits++;
         s++;
       }
     }
+
+    ok = (digits > 0);
   }
 
-  ok = (ok && !(int_digits == 0 && frac_digits == 0));
+  if (ok && (*s == 'e' || *s == 'E')) {
+    bool exp_neg = false;
 
-  ok = (s != NULL && ok && (*s == '\0' || *s == 'e' || *s == 'E'));
-
-  if (s != NULL && ok && (*s == 'e' || *s == 'E')) {
     s++;
-    int exp_sign = 1;
     if (*s == '-') {
-      exp_sign = -1;
+      exp_neg = true;
       s++;
     } else if (*s == '+') {
       s++;
     } else {
       /* Exponent has no explicit sign. */
     }
-    ok = (is_dec_digit(*s) && *s != '\0');
+    ok = is_dec_digit(*s);
 
-    while (is_dec_digit(*s) && ok) {
-      exponent = (exponent * 10) + (int)dec_value(*s);
-      if (exponent > 9999) {
-        exponent = 9999;
+    while (is_dec_digit(*s)) {
+      if (exponent < F64_EXP_SATURATE) {
+        exponent = (exponent * 10L) + (long)dec_value(*s);
       }
       s++;
     }
-    exponent *= exp_sign;
+    if (exp_neg) {
+      exponent = -exponent;
+    }
   }
 
-  ok = (s != NULL && ok && *s == '\0');
+  ok = (ok && *s == '\0');
 
-  double result = (double)int_part;
-  if (ok && frac_digits > 0) {
-    double frac_val = (double)frac_part;
-    int d = frac_digits;
-    while (d > 0) {
-      frac_val /= 10.0;
-      d--;
-    }
-    result += frac_val;
-  }
+  if (ok) {
+    double result = (double)mant;
 
-  int final_exp = exponent;
-  if (ok && final_exp > 0) {
-    while (final_exp > 0) {
-      ok = (result <= (DBL_MAX / 10.0));
-      if (ok) {
-        result *= 10.0;
-        final_exp--;
-      }
+    if (mant != 0ULL) {
+      result = scale_pow10(result, dec_exp + exponent, &ok);
     }
-  } else if (ok && final_exp < 0) {
-    while (final_exp < 0) {
-      result /= 10.0;
-      final_exp++;
+    if (ok) {
+      *out = neg ? -result : result;
     }
-  } else {
-    /* No exponent scaling required. */
-  }
-
-  if (out != NULL && ok) {
-    result *= sign;
-    *out = result;
   }
 
   return ok;
@@ -431,13 +432,14 @@ bool parse_f32(const char *s, float *out) {
  * Public Functions — strtol-backed parsing
  *=======================================================================================*/
 
+#if CLI_ARGS_PARSE_HAVE_STRTOLL
 bool strtol_parse_u64(const char *s, uint64_t *out) {
   char *end = NULL;
   unsigned long long val = 0ULL;
   bool ok = (s != NULL && out != NULL);
 
   if (ok) {
-    ok = (s[0] != '\0');
+    ok = (s[0] != '\0' && strtol_unsigned_text_ok(s));
   }
 
   if (s != NULL && ok) {
@@ -480,6 +482,7 @@ bool strtol_parse_i64(const char *s, int64_t *out) {
 
   return ok;
 }
+#endif /* CLI_ARGS_PARSE_HAVE_STRTOLL */
 
 bool strtol_parse_u32(const char *s, uint32_t *out) {
   char *end = NULL;
@@ -487,7 +490,7 @@ bool strtol_parse_u32(const char *s, uint32_t *out) {
   bool ok = (s != NULL && out != NULL);
 
   if (ok) {
-    ok = (s[0] != '\0');
+    ok = (s[0] != '\0' && strtol_unsigned_text_ok(s));
   }
 
   if (s != NULL && ok) {
@@ -612,10 +615,17 @@ bool strtol_parse_float(const char *s, float *out) {
 
   if (s != NULL && ok) {
     errno = 0;
+#if defined(__AVR__) && (__SIZEOF_DOUBLE__ == __SIZEOF_FLOAT__)
+    /* avr-libc has no strtof(); with a 32-bit double, strtod() is the float parser. */
+    val = (float)strtod(s, &end);
+#else
     val = strtof(s, &end);
+#endif
     ok = (end != s && *end == '\0');
-    if (ok) {
-      ok = (errno != ERANGE);
+    if (ok && errno == ERANGE) {
+      /* Overflow returns ±HUGE_VALF (infinite) and fails; underflow yields 0 or a subnormal
+       * value and succeeds, like parse_f32(). */
+      ok = !isinf(val);
     }
   }
 
@@ -639,8 +649,10 @@ bool strtol_parse_double(const char *s, double *out) {
     errno = 0;
     val = strtod(s, &end);
     ok = (end != s && *end == '\0');
-    if (ok) {
-      ok = (errno != ERANGE);
+    if (ok && errno == ERANGE) {
+      /* Overflow returns ±HUGE_VAL (infinite) and fails; underflow yields 0 or a subnormal
+       * value and succeeds, like parse_f64(). */
+      ok = !isinf(val);
     }
   }
 
@@ -658,19 +670,24 @@ bool strtol_parse_double(const char *s, double *out) {
 int format_u64(char *buf, int size, uint64_t val) {
   char tmp[U64_MAX_DIGITS];
   int len = 0;
+  int pos = 0;
+
   do {
     uint64_t digit = val % 10ULL;
     tmp[len] = (char)('0' + digit);
     len++;
     val /= 10ULL;
   } while (val != 0ULL);
-  int pos = 0;
-  while (len > 0 && pos < size - 1) {
-    len--;
-    buf[pos] = tmp[len];
-    pos++;
+
+  /* All or nothing: a cut-off number would read as a different value. */
+  if (len < size) {
+    while (len > 0) {
+      len--;
+      buf[pos] = tmp[len];
+      pos++;
+    }
   }
-  if (pos < size) {
+  if (size > 0) {
     buf[pos] = '\0';
   }
   return pos;
@@ -680,9 +697,11 @@ int format_i64(char *buf, int size, int64_t val) {
   int result = 0;
 
   if (val < 0) {
-    if (size >= 2) {
+    /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
+    int digits = (size >= 2) ? format_u64(&buf[1], size - 1, (uint64_t)(-(val + 1)) + 1ULL) : 0;
+    if (digits > 0) {
       buf[0] = '-';
-      result = format_u64(&buf[1], size - 1, (uint64_t)(-(val + 1)) + 1ULL) + 1;
+      result = digits + 1;
     } else if (size > 0) {
       buf[0] = '\0';
     } else {
@@ -696,34 +715,27 @@ int format_i64(char *buf, int size, int64_t val) {
 }
 
 int format_hex64(char *buf, int size, uint64_t val) {
+  int digits = 1;
   int result = 0;
 
-  if (size < 3) {
-    if (size > 0) {
-      buf[0] = '\0';
-    }
-  } else {
+  while (digits < 16 && (val >> (unsigned)(digits * 4)) != 0ULL) {
+    digits++;
+  }
+
+  /* All or nothing: "0x" + digits + NUL must fit. */
+  if (2 + digits < size) {
     buf[0] = '0';
     buf[1] = 'x';
-    int pos = 2;
-    bool started = false;
-    for (unsigned int shift = 60U;; shift -= 4U) {
-      uint8_t nib = (uint8_t)((val >> shift) & 0xFULL);
-      if (nib != 0U || started || shift == 0U) {
-        if (pos < size - 1) {
-          buf[pos] = s_hex_digit[nib];
-          pos++;
-        }
-        started = (started || nib != 0U || shift == 0U);
-      }
-      if (shift == 0U) {
-        break;
-      }
+    for (int i = 0; i < digits; i++) {
+      unsigned shift = (unsigned)((digits - 1 - i) * 4);
+      buf[2 + i] = s_hex_digit[(val >> shift) & 0xFULL];
     }
-    if (pos < size) {
-      buf[pos] = '\0';
-    }
-    result = pos;
+    result = 2 + digits;
+    buf[result] = '\0';
+  } else if (size > 0) {
+    buf[0] = '\0';
+  } else {
+    /* No space to write a terminator. */
   }
 
   return result;
@@ -783,7 +795,9 @@ int format_hex8(char *buf, int size, uint8_t val) {
 int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len) {
   int pos = 0;
   for (uint16_t i = 0; i < len; i++) {
-    if (pos >= size - 3) {
+    /* Room for [' '] + 2 hex digits + NUL terminator. */
+    int needed = (i != 0U) ? 4 : 3;
+    if (pos + needed > size) {
       break;
     }
     if (i != 0U) {
@@ -827,6 +841,54 @@ static uint8_t hex_value(char c) {
   }
 
   return value;
+}
+
+/**
+ * @brief Multiply @p value by 10^@p exp10 in exact power-of-ten steps.
+ *
+ * @param[in]  value  Non-negative finite value.
+ * @param[in]  exp10  Decimal exponent to apply.
+ * @param[out] ok     Set to @c false if the result overflows (left unchanged otherwise).
+ *
+ * @return The scaled value (underflow yields 0.0).
+ */
+static double scale_pow10(double value, long exp10, bool *ok) {
+  while (exp10 > 0 && *ok) {
+    long step = (exp10 > F64_EXACT_POW10_MAX) ? F64_EXACT_POW10_MAX : exp10;
+    double p = s_pow10[step];
+
+    if (value > DBL_MAX / p) {
+      *ok = false;
+    } else {
+      value *= p;
+      exp10 -= step;
+    }
+  }
+
+  while (exp10 < 0 && value != 0.0) {
+    long step = (-exp10 > F64_EXACT_POW10_MAX) ? F64_EXACT_POW10_MAX : -exp10;
+    value /= s_pow10[step];
+    exp10 += step;
+  }
+
+  return value;
+}
+
+/**
+ * @brief Reject text that strtoul()/strtoull() would silently negate.
+ *
+ * The C library accepts a leading '-' for unsigned conversions and returns the
+ * negated value modulo 2^N, whose width depends on the platform's @c long.
+ *
+ * @param[in] s  NUL-terminated input.
+ *
+ * @return @c false if the first non-whitespace character is '-'.
+ */
+static bool strtol_unsigned_text_ok(const char *s) {
+  while (*s == ' ' || (*s >= '\t' && *s <= '\r')) {
+    s++;
+  }
+  return (*s != '-');
 }
 
 /*################################### END OF FILE ######################################*/

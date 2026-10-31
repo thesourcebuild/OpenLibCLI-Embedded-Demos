@@ -30,6 +30,25 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Symbol export for shared-library builds (same rules as OPENLIBCLI_API in cli.h). */
+#ifndef OPENLIBCLI_API
+#if defined(_WIN32) || defined(__CYGWIN__)
+#if defined(CLI_SHARED)
+#if defined(BUILD_LIB_SHARED)
+#define OPENLIBCLI_API __declspec(dllexport)
+#else
+#define OPENLIBCLI_API __declspec(dllimport)
+#endif
+#else
+#define OPENLIBCLI_API
+#endif
+#elif defined(CLI_SHARED) && defined(__GNUC__)
+#define OPENLIBCLI_API __attribute__((visibility("default")))
+#else
+#define OPENLIBCLI_API
+#endif
+#endif
+
 /*=======================================================================================
  * Public Defines
  *=======================================================================================*/
@@ -131,24 +150,25 @@ extern "C" {
  * @brief Parse a decimal string into a uint64_t.
  *
  * Rejects leading whitespace, leading sign, and trailing junk.
- * Returns false on overflow (wraparound detected via monotonicity check).
+ * Returns false on overflow (checked before every multiply-add).
  *
  * @param[in]  s   NUL-terminated decimal string.
  * @param[out] out Parsed value on success; unchanged on failure.
  * @return true on success, false on empty string, invalid chars, or overflow.
  */
-bool parse_u64(const char *s, uint64_t *out);
+OPENLIBCLI_API bool parse_u64(const char *s, uint64_t *out);
 
 /**
  * @brief Parse an optionally signed decimal string into an int64_t.
  *
- * Leading '+' or '-' is accepted.  Rejects trailing junk and overflow.
+ * Leading '+' or '-' is accepted but must be followed by at least one digit
+ * (a sign alone is rejected).  Rejects trailing junk and overflow.
  *
  * @param[in]  s   NUL-terminated decimal string (optional leading '+' or '-').
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure.
  */
-bool parse_i64(const char *s, int64_t *out);
+OPENLIBCLI_API bool parse_i64(const char *s, int64_t *out);
 
 /**
  * @brief Parse a hexadecimal string into a uint64_t.
@@ -160,7 +180,7 @@ bool parse_i64(const char *s, int64_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure.
  */
-bool parse_hex_u64(const char *s, uint64_t *out);
+OPENLIBCLI_API bool parse_hex_u64(const char *s, uint64_t *out);
 
 /**
  * @brief Parse a decimal string into a uint32_t.
@@ -169,7 +189,7 @@ bool parse_hex_u64(const char *s, uint64_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT32_MAX.
  */
-bool parse_u32(const char *s, uint32_t *out);
+OPENLIBCLI_API bool parse_u32(const char *s, uint32_t *out);
 
 /**
  * @brief Parse a signed decimal string into an int32_t.
@@ -178,7 +198,7 @@ bool parse_u32(const char *s, uint32_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds INT32_MAX or underflows INT32_MIN.
  */
-bool parse_i32(const char *s, int32_t *out);
+OPENLIBCLI_API bool parse_i32(const char *s, int32_t *out);
 
 /**
  * @brief Parse a hexadecimal string into a uint32_t.
@@ -187,7 +207,7 @@ bool parse_i32(const char *s, int32_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT32_MAX.
  */
-bool parse_hex_u32(const char *s, uint32_t *out);
+OPENLIBCLI_API bool parse_hex_u32(const char *s, uint32_t *out);
 
 /**
  * @brief Parse a decimal string into a uint16_t.
@@ -196,7 +216,7 @@ bool parse_hex_u32(const char *s, uint32_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT16_MAX.
  */
-bool parse_u16(const char *s, uint16_t *out);
+OPENLIBCLI_API bool parse_u16(const char *s, uint16_t *out);
 
 /**
  * @brief Parse a signed decimal string into an int16_t.
@@ -205,7 +225,7 @@ bool parse_u16(const char *s, uint16_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds INT16 range.
  */
-bool parse_i16(const char *s, int16_t *out);
+OPENLIBCLI_API bool parse_i16(const char *s, int16_t *out);
 
 /**
  * @brief Parse a decimal string into a uint8_t.
@@ -214,7 +234,7 @@ bool parse_i16(const char *s, int16_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT8_MAX.
  */
-bool parse_u8(const char *s, uint8_t *out);
+OPENLIBCLI_API bool parse_u8(const char *s, uint8_t *out);
 
 /**
  * @brief Parse a signed decimal string into an int8_t.
@@ -223,13 +243,18 @@ bool parse_u8(const char *s, uint8_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds INT8 range.
  */
-bool parse_i8(const char *s, int8_t *out);
+OPENLIBCLI_API bool parse_i8(const char *s, int8_t *out);
 
 /**
  * @brief Parse a decimal floating-point string into a double.
  *
  * Handles optional sign (+/-), decimal point, and scientific notation (e/E).
- * Zero libc dependency — uses only built-in double arithmetic.
+ * Zero libc dependency — uses only built-in double arithmetic.  Any number of
+ * digits is accepted: the first 19-20 significant digits form the mantissa
+ * (rounded half-up on the next digit) and further digits only affect the
+ * decimal exponent. The result is within about one unit in the last place of
+ * the correctly rounded value; use @c strtol_parse_double when exact IEEE
+ * rounding is required.
  *
  * Overflow returns false.  Underflow returns 0.0 with true.
  *
@@ -237,7 +262,7 @@ bool parse_i8(const char *s, int8_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false on empty/invalid/overflow.
  */
-bool parse_f64(const char *s, double *out);
+OPENLIBCLI_API bool parse_f64(const char *s, double *out);
 
 /**
  * @brief Parse a decimal floating-point string into a float.
@@ -249,7 +274,7 @@ bool parse_f64(const char *s, double *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false on empty/invalid/overflow.
  */
-bool parse_f32(const char *s, float *out);
+OPENLIBCLI_API bool parse_f32(const char *s, float *out);
 
 /** @} */
 
@@ -261,35 +286,55 @@ bool parse_f32(const char *s, float *out);
  *  @{
  */
 
+#ifndef CLI_ARGS_PARSE_HAVE_STRTOLL
+#if defined(__AVR__)
+/** @brief avr-libc provides no strtoll() / strtoull(): the 64-bit strtol parsers are omitted
+ *         (use @c parse_u64 / @c parse_i64 / @c parse_hex_u64 instead). */
+#define CLI_ARGS_PARSE_HAVE_STRTOLL 0
+#else
+/** @brief The C library provides strtoll() / strtoull(). */
+#define CLI_ARGS_PARSE_HAVE_STRTOLL 1
+#endif
+#endif
+
+#if CLI_ARGS_PARSE_HAVE_STRTOLL
 /**
  * @brief Parse a string into a uint64_t via strtoull (base 0).
  *
  * Skips leading whitespace.  Base 0 means "0x" → hex, "0" → octal,
- * otherwise decimal.  Returns false on overflow or trailing junk.
+ * otherwise decimal.  Returns false on overflow, trailing junk, or a leading
+ * '-' (which strtoull would silently wrap to a large positive value).
+ * Not available when @c CLI_ARGS_PARSE_HAVE_STRTOLL is 0 (avr-libc).
  *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure.
  */
-bool strtol_parse_u64(const char *s, uint64_t *out);
+OPENLIBCLI_API bool strtol_parse_u64(const char *s, uint64_t *out);
 
 /**
  * @brief Parse a string into an int64_t via strtoll (base 0).
  *
+ * Not available when @c CLI_ARGS_PARSE_HAVE_STRTOLL is 0 (avr-libc).
+ *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure.
  */
-bool strtol_parse_i64(const char *s, int64_t *out);
+OPENLIBCLI_API bool strtol_parse_i64(const char *s, int64_t *out);
+#endif /* CLI_ARGS_PARSE_HAVE_STRTOLL */
 
 /**
  * @brief Parse a string into a uint32_t via strtoul (base 0).
+ *
+ * Same input rules as @c strtol_parse_u64; negative input is rejected on every
+ * platform regardless of the width of @c long.
  *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure or if value exceeds UINT32_MAX.
  */
-bool strtol_parse_u32(const char *s, uint32_t *out);
+OPENLIBCLI_API bool strtol_parse_u32(const char *s, uint32_t *out);
 
 /**
  * @brief Parse a string into an int32_t via strtol (base 0).
@@ -298,7 +343,7 @@ bool strtol_parse_u32(const char *s, uint32_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false on failure or if value exceeds INT32 range.
  */
-bool strtol_parse_i32(const char *s, int32_t *out);
+OPENLIBCLI_API bool strtol_parse_i32(const char *s, int32_t *out);
 
 /**
  * @brief Parse a string into a uint16_t via strtol delegation.
@@ -307,7 +352,7 @@ bool strtol_parse_i32(const char *s, int32_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT16_MAX.
  */
-bool strtol_parse_u16(const char *s, uint16_t *out);
+OPENLIBCLI_API bool strtol_parse_u16(const char *s, uint16_t *out);
 
 /**
  * @brief Parse a string into an int16_t via strtol delegation.
@@ -316,7 +361,7 @@ bool strtol_parse_u16(const char *s, uint16_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds INT16 range.
  */
-bool strtol_parse_i16(const char *s, int16_t *out);
+OPENLIBCLI_API bool strtol_parse_i16(const char *s, int16_t *out);
 
 /**
  * @brief Parse a string into a uint8_t via strtol delegation.
@@ -325,7 +370,7 @@ bool strtol_parse_i16(const char *s, int16_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds UINT8_MAX.
  */
-bool strtol_parse_u8(const char *s, uint8_t *out);
+OPENLIBCLI_API bool strtol_parse_u8(const char *s, uint8_t *out);
 
 /**
  * @brief Parse a string into an int8_t via strtol delegation.
@@ -334,7 +379,7 @@ bool strtol_parse_u8(const char *s, uint8_t *out);
  * @param[out] out Parsed value on success.
  * @return true on success, false if value exceeds INT8 range.
  */
-bool strtol_parse_i8(const char *s, int8_t *out);
+OPENLIBCLI_API bool strtol_parse_i8(const char *s, int8_t *out);
 
 /**
  * @brief Parse a string into a float via strtof.
@@ -344,18 +389,20 @@ bool strtol_parse_i8(const char *s, int8_t *out);
  *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
- * @return true on success, false on parse failure or overflow/underflow.
+ * @return true on success (underflow yields 0 or a subnormal value, like
+ *         @c parse_f32), false on parse failure or overflow.
  */
-bool strtol_parse_float(const char *s, float *out);
+OPENLIBCLI_API bool strtol_parse_float(const char *s, float *out);
 
 /**
  * @brief Parse a string into a double via strtod.
  *
  * @param[in]  s   NUL-terminated string.
  * @param[out] out Parsed value on success.
- * @return true on success, false on parse failure or overflow/underflow.
+ * @return true on success (underflow yields 0 or a subnormal value, like
+ *         @c parse_f64), false on parse failure or overflow.
  */
-bool strtol_parse_double(const char *s, double *out);
+OPENLIBCLI_API bool strtol_parse_double(const char *s, double *out);
 
 /** @} */
 
@@ -370,14 +417,17 @@ bool strtol_parse_double(const char *s, double *out);
 /**
  * @brief Format a uint64_t as a decimal string.
  *
- * Writes at most @p size - 1 characters, always NUL-terminates.
+ * All decimal and hex formatters are all-or-nothing: if the complete text plus
+ * its NUL terminator does not fit in @p size bytes, an empty string is written
+ * and 0 is returned (a cut-off number would read as a different value). The
+ * output is always NUL-terminated when @p size > 0.
  *
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
  * @param[in]  val  Value to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_u64(char *buf, int size, uint64_t val);
+OPENLIBCLI_API int format_u64(char *buf, int size, uint64_t val);
 
 /**
  * @brief Format an int64_t as a signed decimal string.
@@ -387,7 +437,7 @@ int format_u64(char *buf, int size, uint64_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_i64(char *buf, int size, int64_t val);
+OPENLIBCLI_API int format_i64(char *buf, int size, int64_t val);
 
 /**
  * @brief Format a uint64_t as "0xABCD..." (uppercase hex, no leading zeros).
@@ -397,7 +447,7 @@ int format_i64(char *buf, int size, int64_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_hex64(char *buf, int size, uint64_t val);
+OPENLIBCLI_API int format_hex64(char *buf, int size, uint64_t val);
 
 /**
  * @brief Format a uint32_t as a decimal string.
@@ -407,7 +457,7 @@ int format_hex64(char *buf, int size, uint64_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_u32(char *buf, int size, uint32_t val);
+OPENLIBCLI_API int format_u32(char *buf, int size, uint32_t val);
 
 /**
  * @brief Format an int32_t as a signed decimal string.
@@ -417,7 +467,7 @@ int format_u32(char *buf, int size, uint32_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_i32(char *buf, int size, int32_t val);
+OPENLIBCLI_API int format_i32(char *buf, int size, int32_t val);
 
 /**
  * @brief Format a uint32_t as "0x1234ABCD" (uppercase hex, no leading zeros).
@@ -427,7 +477,7 @@ int format_i32(char *buf, int size, int32_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_hex32(char *buf, int size, uint32_t val);
+OPENLIBCLI_API int format_hex32(char *buf, int size, uint32_t val);
 
 /**
  * @brief Format a uint16_t as a decimal string.
@@ -437,7 +487,7 @@ int format_hex32(char *buf, int size, uint32_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_u16(char *buf, int size, uint16_t val);
+OPENLIBCLI_API int format_u16(char *buf, int size, uint16_t val);
 
 /**
  * @brief Format an int16_t as a signed decimal string.
@@ -447,17 +497,17 @@ int format_u16(char *buf, int size, uint16_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_i16(char *buf, int size, int16_t val);
+OPENLIBCLI_API int format_i16(char *buf, int size, int16_t val);
 
 /**
- * @brief Format a uint16_t as "0xABCD" (uppercase hex, zero-padded to 4 digits).
+ * @brief Format a uint16_t as "0xABCD" (uppercase hex, no leading zeros).
  *
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_hex16(char *buf, int size, uint16_t val);
+OPENLIBCLI_API int format_hex16(char *buf, int size, uint16_t val);
 
 /**
  * @brief Format a uint8_t as a decimal string.
@@ -467,7 +517,7 @@ int format_hex16(char *buf, int size, uint16_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_u8(char *buf, int size, uint8_t val);
+OPENLIBCLI_API int format_u8(char *buf, int size, uint8_t val);
 
 /**
  * @brief Format an int8_t as a signed decimal string.
@@ -477,7 +527,7 @@ int format_u8(char *buf, int size, uint8_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written.
  */
-int format_i8(char *buf, int size, int8_t val);
+OPENLIBCLI_API int format_i8(char *buf, int size, int8_t val);
 
 /**
  * @brief Format a uint8_t as "AB" (uppercase hex, always 2 digits).
@@ -487,10 +537,13 @@ int format_i8(char *buf, int size, int8_t val);
  * @param[in]  val  Value to format.
  * @return Number of characters written (always 2).
  */
-int format_hex8(char *buf, int size, uint8_t val);
+OPENLIBCLI_API int format_hex8(char *buf, int size, uint8_t val);
 
 /**
- * @brief Format a byte array as "0xAB 0xCD 0xEF ..." (space separated).
+ * @brief Format a byte array as "AB CD EF ..." (uppercase hex, space separated).
+ *
+ * Only whole bytes are written: output stops at the last byte that fits
+ * together with its separator and the NUL terminator.
  *
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
@@ -498,7 +551,7 @@ int format_hex8(char *buf, int size, uint8_t val);
  * @param[in]  len  Number of bytes to format.
  * @return Number of characters written (excluding NUL terminator).
  */
-int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len);
+OPENLIBCLI_API int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len);
 
 /** @} */
 

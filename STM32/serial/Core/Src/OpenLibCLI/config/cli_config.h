@@ -147,6 +147,9 @@ extern "C" {
 #ifndef CLI_MAX_OUTPUT_BUF
 #define CLI_MAX_OUTPUT_BUF 48 /**< AVR: per-line output buffer (bytes). */
 #endif
+#ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
+#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves the buffer). */
+#endif
 
 /*-----------------------------------------------------------------------------
  *  Transport / Timing
@@ -282,6 +285,9 @@ extern "C" {
 #ifndef CLI_MAX_OUTPUT_BUF
 #define CLI_MAX_OUTPUT_BUF 160 /**< per-line output buffer (bytes). */
 #endif
+#ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
+#define CLI_ENABLE_PRINT_TRANSPORT_CB 1 /**< per-line output callback enabled. */
+#endif
 
 /*-----------------------------------------------------------------------------
  *  Transport / Timing
@@ -319,6 +325,10 @@ extern "C" {
 
 #ifndef CLI_ENABLE_PIPE_FILTER
 #define CLI_ENABLE_PIPE_FILTER 0 /**< Pipe filters disabled on Embedded to save SRAM. */
+#endif
+
+#ifndef CLI_MAX_EXEC_DEPTH
+#define CLI_MAX_EXEC_DEPTH 2 /**< Max nesting of cli_exec() calls made from command handlers. */
 #endif
 
 #ifndef CLI_ENABLE_TIME_SOURCE
