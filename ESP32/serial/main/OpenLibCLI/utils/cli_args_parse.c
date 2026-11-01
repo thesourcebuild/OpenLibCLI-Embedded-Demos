@@ -3,7 +3,8 @@
  * @brief Lightweight integer, hex, and floating-point parse/format routines.
  *
  * Implements:
- *   - hand-rolled integer and hex parsers (parse_*)
+ *   - hand-rolled integer and hex parsers, and strictly checked decimal float parsers
+ *     converted by strtod / strtof (parse_*)
  *   - strtol/strtoul/strtoll/strtoull/strtof/strtod wrapped parsers (strtol_parse_*)
  *   - integer and hex formatters (format_*) — no sprintf dependency
  *
@@ -19,7 +20,6 @@
 
 #include <stdlib.h>
 #include <errno.h>
-#include <float.h>
 #include <limits.h>
 #include <math.h>
 
@@ -31,15 +31,6 @@
 
 /** @brief Maximum decimal digits in a uint64_t without overflow. */
 #define U64_MAX_DIGITS (20U)
-
-/** @brief parse_f64: largest mantissa that can take one more decimal digit without overflow. */
-#define F64_MANT_LIMIT ((UINT64_MAX - 9ULL) / 10ULL)
-
-/** @brief parse_f64: exponent magnitude beyond which every double over/underflows anyway. */
-#define F64_EXP_SATURATE (100000L)
-
-/** @brief Largest power of ten that is exactly representable in a double. */
-#define F64_EXACT_POW10_MAX (22)
 
 /*=======================================================================================
  * Private Macros
@@ -68,12 +59,6 @@ static const char s_hex_digit[16] = {
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
 };
 
-/** @brief Exact powers of ten 10^0 .. 10^22 used to scale parsed mantissas. */
-static const double s_pow10[F64_EXACT_POW10_MAX + 1] = {
-    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
-    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
-};
-
 /*=======================================================================================
  * Private Function Prototypes
  *=======================================================================================*/
@@ -82,7 +67,7 @@ static bool is_dec_digit(char c);
 static bool is_hex_digit(char c);
 static uint8_t dec_value(char c);
 static uint8_t hex_value(char c);
-static double scale_pow10(double value, long exp10, bool *ok);
+static bool is_decimal_float_text(const char *s);
 static bool strtol_unsigned_text_ok(const char *s);
 
 /*=======================================================================================
@@ -310,125 +295,42 @@ bool parse_i8(const char *s, int8_t *out) {
 }
 
 bool parse_f64(const char *s, double *out) {
-  bool neg = false;
-  uint64_t mant = 0;    /* Significant digits (up to 19-20). */
-  long digits = 0;      /* Mantissa digits seen (integer + fraction). */
-  long dec_exp = 0;     /* Power of ten implied by the digits kept in mant. */
-  long exponent = 0;    /* Explicit e/E exponent (saturated). */
-  bool dropped = false; /* A digit beyond the mantissa precision was seen (and rounded). */
-  bool ok = (s != NULL && out != NULL);
+  char *end = NULL;
+  double val = 0.0;
+  bool ok = (s != NULL && out != NULL && is_decimal_float_text(s));
 
   if (ok) {
-    ok = (s[0] != '\0');
+    /* The text is plain decimal, so strtod() reads all of it and rounds correctly. Overflow
+     * returns +-HUGE_VAL; underflow returns 0 or a subnormal value and is accepted. */
+    val = strtod(s, &end);
+    ok = (*end == '\0' && isfinite(val));
   }
 
   if (ok) {
-    if (*s == '-') {
-      neg = true;
-      s++;
-    } else if (*s == '+') {
-      s++;
-    } else {
-      /* No sign. */
-    }
-
-    /* Integer digits: keep as many as fit in mant, scale for the rest. The first digit
-     * that does not fit rounds the kept mantissa (half up). */
-    while (is_dec_digit(*s)) {
-      uint8_t d = dec_value(*s);
-      if (!dropped && mant <= F64_MANT_LIMIT) {
-        mant = (mant * 10ULL) + (uint64_t)d;
-      } else {
-        if (!dropped) {
-          dropped = true;
-          mant += (d >= 5U) ? 1ULL : 0ULL;
-        }
-        dec_exp++;
-      }
-      digits++;
-      s++;
-    }
-
-    /* Fraction digits: beyond the mantissa precision they only round the last kept digit. */
-    if (*s == '.') {
-      s++;
-      while (is_dec_digit(*s)) {
-        uint8_t d = dec_value(*s);
-        if (!dropped && mant <= F64_MANT_LIMIT) {
-          mant = (mant * 10ULL) + (uint64_t)d;
-          dec_exp--;
-        } else if (!dropped) {
-          dropped = true;
-          mant += (d >= 5U) ? 1ULL : 0ULL;
-        } else {
-          /* Further digits are below the precision of a double. */
-        }
-        digits++;
-        s++;
-      }
-    }
-
-    ok = (digits > 0);
-  }
-
-  if (ok && (*s == 'e' || *s == 'E')) {
-    bool exp_neg = false;
-
-    s++;
-    if (*s == '-') {
-      exp_neg = true;
-      s++;
-    } else if (*s == '+') {
-      s++;
-    } else {
-      /* Exponent has no explicit sign. */
-    }
-    ok = is_dec_digit(*s);
-
-    while (is_dec_digit(*s)) {
-      if (exponent < F64_EXP_SATURATE) {
-        exponent = (exponent * 10L) + (long)dec_value(*s);
-      }
-      s++;
-    }
-    if (exp_neg) {
-      exponent = -exponent;
-    }
-  }
-
-  ok = (ok && *s == '\0');
-
-  if (ok) {
-    double result = (double)mant;
-
-    if (mant != 0ULL) {
-      result = scale_pow10(result, dec_exp + exponent, &ok);
-    }
-    if (ok) {
-      *out = neg ? -result : result;
-    }
+    *out = val;
   }
 
   return ok;
 }
 
 bool parse_f32(const char *s, float *out) {
-  double tmp = 0.0;
-  bool ok = (out != NULL);
+  char *end = NULL;
+  float val = 0.0F;
+  bool ok = (s != NULL && out != NULL && is_decimal_float_text(s));
 
   if (ok) {
-    ok = parse_f64(s, &tmp);
-    if (ok) {
-      /* Narrowing rounds to nearest: everything below FLT_MAX + half a float ulp (2^103)
-       * becomes a finite float, that bound and above becomes infinity. FLT_MAX is
-       * (2^24 - 1) * 2^104, so the half ulp is computed exactly. */
-      double limit = (double)FLT_MAX + (((double)FLT_MAX / 16777215.0) * 0.5);
-      ok = (tmp < limit && tmp > -limit);
-    }
+    /* Converted to float directly: going through double first would round twice. */
+#if defined(__AVR__) && (__SIZEOF_DOUBLE__ == __SIZEOF_FLOAT__)
+    /* avr-libc has no strtof(); with a 32-bit double, strtod() is the float parser. */
+    val = (float)strtod(s, &end);
+#else
+    val = strtof(s, &end);
+#endif
+    ok = (*end == '\0' && isfinite(val));
   }
 
-  if (out != NULL && ok) {
-    *out = (float)tmp;
+  if (ok) {
+    *out = val;
   }
 
   return ok;
@@ -842,33 +744,45 @@ static uint8_t hex_value(char c) {
 }
 
 /**
- * @brief Multiply @p value by 10^@p exp10 in exact power-of-ten steps.
+ * @brief Test whether @p s is a plain decimal number as accepted by @c parse_f64.
  *
- * @param[in]  value  Non-negative finite value.
- * @param[in]  exp10  Decimal exponent to apply.
- * @param[out] ok     Set to @c false if the result overflows (left unchanged otherwise).
+ * Grammar: optional sign, digits with at most one '.', at least one digit, then an
+ * optional exponent ('e' or 'E', optional sign, at least one digit). Nothing else:
+ * no whitespace, hexadecimal floats, "inf" or "nan".
  *
- * @return The scaled value (underflow yields 0.0).
+ * @param[in] s  NUL-terminated input.
+ *
+ * @return @c true when the whole string matches.
  */
-static double scale_pow10(double value, long exp10, bool *ok) {
-  while (exp10 > 0 && *ok) {
-    long step = (exp10 > F64_EXACT_POW10_MAX) ? F64_EXACT_POW10_MAX : exp10;
-    /* Checked after the multiply: a pre-check against DBL_MAX / p is itself rounded and
-     * lets products that round up to infinity through. */
-    value *= s_pow10[step];
-    exp10 -= step;
-    if (isinf(value)) {
-      *ok = false;
+static bool is_decimal_float_text(const char *s) {
+  bool digits = false;
+
+  if (*s == '-' || *s == '+') {
+    s++;
+  }
+  while (is_dec_digit(*s)) {
+    digits = true;
+    s++;
+  }
+  if (*s == '.') {
+    s++;
+    while (is_dec_digit(*s)) {
+      digits = true;
+      s++;
+    }
+  }
+  if (digits && (*s == 'e' || *s == 'E')) {
+    s++;
+    if (*s == '-' || *s == '+') {
+      s++;
+    }
+    digits = is_dec_digit(*s);
+    while (is_dec_digit(*s)) {
+      s++;
     }
   }
 
-  while (exp10 < 0 && value != 0.0) {
-    long step = (-exp10 > F64_EXACT_POW10_MAX) ? F64_EXACT_POW10_MAX : -exp10;
-    value /= s_pow10[step];
-    exp10 += step;
-  }
-
-  return value;
+  return (digits && *s == '\0');
 }
 
 /**

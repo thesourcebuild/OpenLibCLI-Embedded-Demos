@@ -646,6 +646,9 @@ struct cli_cmd_s {
   uint8_t flags;           /**< Bitmask of @c CLI_CMD_FLAG_* values. */
 
 #if CLI_ENABLE_ALIASES
+#if CLI_MAX_ALIASES < 1
+#error "CLI_MAX_ALIASES must be at least 1 when CLI_ENABLE_ALIASES is set"
+#endif
   char aliases[CLI_MAX_ALIASES][CLI_MAX_NAME_LEN]; /**< Inline alias keywords
                                                       no extra tree nodes. */
   cli_len_t num_aliases;                           /**< Number of valid entries in @c aliases[]. */
@@ -751,7 +754,9 @@ struct cli_s {
   cli_auth_state_enum_t auth_state;
   char users[CLI_MAX_USERS][CLI_MAX_USERNAME_LEN];     /**< Local user table usernames. */
   char passwords[CLI_MAX_USERS][CLI_MAX_PASSWORD_LEN]; /**< Local user table passwords. */
-  char auth_username[CLI_MAX_USERNAME_LEN];  /**< Username captured before password entry. */
+  char auth_username[CLI_MAX_USERNAME_LEN + 1]; /**< Username captured before password entry;
+                                                     one byte longer than a valid username, so
+                                                     a name typed too long never matches. */
   cli_priv_t user_privileges[CLI_MAX_USERS]; /**< Privilege level per local user. */
   cli_len_t num_users;     /**< Number of entries currently in the local user table. */
   cli_len_t auth_attempts;   /**< Number of failed login attempts in this auth cycle. */
@@ -761,6 +766,8 @@ struct cli_s {
   cli_time_t auth_lockout_started_ts; /**< Timestamp when the current lockout began. */
   cli_auth_state_enum_t auth_resume_state; /**< State restored after the enable prompt or a
                                               lockout; @c CLI_AUTH_USERNAME means re-login. */
+  bool auth_requested; /**< @c cli_request_auth() during a (re)start: the session begins at
+                            the login prompt even without @c require_auth. */
   bool require_auth;                  /**< True when the session requires login before running
                                          commands. */
   cli_auth_fn authorization_cb;       /**< Custom auth callback; overrides the local user table. */
@@ -842,6 +849,9 @@ struct cli_s {
   bool out_open;       /**< Command output so far did not end with a newline. */
 #if CLI_ENABLE_HISTORY && CLI_HISTORY_INDEX_SELECTION
   cli_history_idx_t history_replay; /**< Ring slot recalled by @c history N, or -1. */
+  bool history_cleared; /**< Set by @c cli_clear_history(): the typed line being executed
+                             is not recorded afterwards (it cleared the history, e.g. by
+                             starting a new login). */
 #endif
 
   /* --- ANSI / VT100 escape state machine
@@ -1121,10 +1131,12 @@ OPENLIBCLI_API void cli_set_mode_change_cb(cli_struct_t *cli, cli_mode_fn fn);
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  Mode value to name (not @c CLI_MODE_ANY).
- * @param[in] name  Display string (e.g. @c "config").
+ * @param[in] name  Display string (e.g. @c "config"), shorter than
+ *                  @c CLI_MAX_MODE_NAME_LEN.
  *
- * @return @c CLI_OK, @c CLI_ERR on invalid arguments, or @c CLI_ERR_NOMEM when
- *         @c CLI_MAX_MODES names are already stored.
+ * @return @c CLI_OK, @c CLI_ERR on invalid arguments or a name that does not fit
+ *         (the previous name is kept), or @c CLI_ERR_NOMEM when @c CLI_MAX_MODES
+ *         names are already stored.
  */
 OPENLIBCLI_API int8_t cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, const char *name);
 
@@ -1234,6 +1246,9 @@ OPENLIBCLI_API int8_t cli_clear_history(cli_struct_t *cli);
  * @brief Check the idle timeout once; call periodically in non-blocking
  * integrations.
  *
+ * Nothing happens during an authentication lockout: it ends by itself, and the
+ * idle period starts again then.
+ *
  * @param[in] cli  Active CLI session.
  *
  * @return @c CLI_OK if the session is still active, negative if the timeout
@@ -1294,7 +1309,9 @@ OPENLIBCLI_API void cli_require_authorization(cli_struct_t *cli, bool require);
  * Applies after three failed logins and after three consecutive failed enable
  * secrets. @c CLI_AUTH_FAILURE_MODE_LOCKOUT needs a time source; without one
  * (and with a non-zero lockout duration) the session is closed instead, because
- * the lockout could never expire. Input received during a lockout is discarded.
+ * the lockout could never expire. Input received during a lockout is discarded,
+ * and the idle timeout is paused until the lockout ends (an idle session restart
+ * would otherwise end the lockout early).
  *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  One of the @c cli_auth_failure_mode_enum_t values.
@@ -1337,12 +1354,11 @@ OPENLIBCLI_API void cli_set_auth_lockout_duration(cli_struct_t *cli, uint32_t se
  *                        characters, @c ?, @c | and @c ".
  * @param[in] callback    Handler invoked when the command is executed, or
  *                        @c NULL for pure sub-menu nodes.
- * @param[in] privilege   CLI mode in which the command is visible
- *                        (@c CLI_MODE_ANY for all modes). @c CLI_PRIV_UNPRIVILEGED or @c
- * CLI_PRIV_PRIVILEGED.
- * @param[in] mode        CLI mode in which the command is visible
- *                        (@c CLI_MODE_ANY for all modes). @c CLI_MODE_ANY or a specific mode
- * constant.
+ * @param[in] privilege   Minimum privilege level needed to see and run the command
+ *                        (@c CLI_PRIV_USER / @c CLI_PRIV_UNPRIVILEGED or
+ *                        @c CLI_PRIV_PRIVILEGED).
+ * @param[in] mode        CLI mode in which the command is visible: a specific mode
+ *                        constant, or @c CLI_MODE_ANY for all modes.
  * @param[in] help        Short help string shown by the @c ? / help commands,
  *                        or @c NULL for no help text.
  *
@@ -1517,9 +1533,11 @@ OPENLIBCLI_API void cli_tick_stats_reset(cli_struct_t *cli);
 /**
  * @brief Execute a command string programmatically.
  *
- * Copies @p cmd into the internal input buffer, runs the full execution
- * pipeline (trim, tokenize, resolve, callback), and resets the input
- * buffer.  Output is still sent through the active transport.
+ * Copies @p cmd into the internal input buffer and runs the full execution
+ * pipeline (trim, tokenize, resolve, callback). Output is still sent through the
+ * active transport. Called from outside any command (a callback, the main loop)
+ * while the session runs, the output starts on a new line and the prompt, with
+ * whatever the user had typed, is shown again afterwards.
  *
  * Arguments containing spaces, @c | or @c ? are written in double quotes
  * (@c "a b"); inside quotes @c \\" and @c \\\\ escape a quote and a backslash.
@@ -1799,12 +1817,17 @@ OPENLIBCLI_API int cli_sscanf(const char *str, const char *fmt, void *out);
  * @brief Register all built-in commands into a CLI instance.
  *
  * Registers @c exit, @c quit, @c enable, @c disable, @c end, @c configure,
- * @c help, @c clear, and (if enabled) @c history into the provided CLI instance.
- * On AVR/Arduino targets only @c exit, @c help, and @c history are registered.
+ * @c help, @c usage (with @c commands and @c keys), @c clear / @c cls (ANSI
+ * terminals; the alias needs @c CLI_ENABLE_ALIASES) and, if enabled, @c history.
+ * They take up to 12 pool entries; the longest name, @c configure, needs
+ * @c CLI_MAX_NAME_LEN of at least 10.
  *
  * @param[in] cli  Pointer to an initialised CLI instance.
+ *
+ * @return @c CLI_OK, or @c CLI_ERR if any of them could not be registered (pool
+ *         full, name too long); the others are registered regardless.
  */
-OPENLIBCLI_API void cli_add_builtin_cmds(cli_struct_t *cli);
+OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli);
 
 /**
  * @brief Built-in @c exit command handler.

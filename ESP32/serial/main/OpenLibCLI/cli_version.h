@@ -39,7 +39,7 @@ extern "C" {
 #define CLI_VERSION_MAJOR 0
 
 /** @brief Minor version number. Incremented on backward-compatible additions. */
-#define CLI_VERSION_MINOR 2
+#define CLI_VERSION_MINOR 3
 
 /** @brief Revision / patch number. Incremented on bug-fix releases. */
 #define CLI_VERSION_REVISION 1
@@ -77,7 +77,7 @@ extern "C" {
 #define CLI_VERSION_XSTR(v) CLI_VERSION_STR(v)
 
 /**
- * @brief Human-readable version string, for example @c "03f826a-dirty".
+ * @brief Human-readable version string, for example @c "f60cc56-dirty".
  *
  * Built from the individual numeric components via the stringify helpers.
  */

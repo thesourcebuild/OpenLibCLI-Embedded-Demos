@@ -69,6 +69,16 @@
 #error "CLI_MAX_EXEC_DEPTH must be in the range 1..255"
 #endif
 
+#if CLI_ENABLE_AUTH && ((CLI_MAX_USERNAME_LEN >= CLI_MAX_INPUT_LEN) ||                           \
+                        (CLI_MAX_PASSWORD_LEN >= CLI_MAX_INPUT_LEN) ||                           \
+                        (CLI_MAX_ENABLE_SECRET_LEN >= CLI_MAX_INPUT_LEN))
+#error "CLI_MAX_USERNAME_LEN, CLI_MAX_PASSWORD_LEN and CLI_MAX_ENABLE_SECRET_LEN must be smaller than CLI_MAX_INPUT_LEN"
+#endif
+
+#if CLI_MAX_ARGS < 2
+#error "CLI_MAX_ARGS must be at least 2: it holds up to CLI_MAX_ARGS - 1 tokens and the end marker"
+#endif
+
 #if CLI_MAX_RX_BYTES_PER_TICK < 1
 #error "CLI_MAX_RX_BYTES_PER_TICK must be at least 1"
 #endif
@@ -262,6 +272,10 @@ static void cli_backspace(cli_struct_t *cli);
 static void cli_kill_line(cli_struct_t *cli);
 static void cli_kill_word(cli_struct_t *cli);
 static void cli_clear_input(cli_struct_t *cli);
+static void cli_redisplay_input(cli_struct_t *cli);
+#if CLI_ENABLE_AUTH
+static void cli_input_prompt_changed(cli_struct_t *cli);
+#endif
 
 /* AVR PROGMEM Helpers ------------------------------------------------------------------*/
 
@@ -385,6 +399,9 @@ static bool cli_eol_pair(cli_struct_t *cli, int byte);
 static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc,
                                   cli_argc_t depth, cli_cmd_handle_t parent);
 static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive);
+static bool cli_command_begin(cli_struct_t *cli);
+static void cli_command_end(cli_struct_t *cli, bool outermost);
+static int8_t cli_quit_key(cli_struct_t *cli);
 static int8_t cli_exec_area(cli_struct_t *cli, char **area, size_t *size);
 static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len);
 #if CLI_ENABLE_HISTORY && CLI_HISTORY_INDEX_SELECTION
@@ -422,52 +439,73 @@ static void handle_csi(cli_struct_t *cli, char final);
  *=======================================================================================*/
 
 /* Built-in Command Handlers ------------------------------------------------------------*/
-OPENLIBCLI_API void cli_add_builtin_cmds(cli_struct_t *cli) {
+OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli) {
   cli_cmd_handle_t h_usage;
   cli_cmd_handle_t h_clear;
+  bool ok = (cli != NULL);
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("exit"), cli_cmd_builtin_exit, CLI_PRIV_USER,
-                        CLI_MODE_ANY, CLI_STR("Exit session"));
+  /* Every registration is attempted; any failure (pool full, a name that does not fit in
+   * CLI_MAX_NAME_LEN) is reported, so a missing built-in does not go unnoticed. */
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("exit"), cli_cmd_builtin_exit, CLI_PRIV_USER,
+                        CLI_MODE_ANY, CLI_STR("Exit session")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("quit"), cli_cmd_builtin_quit, CLI_PRIV_USER,
-                        CLI_MODE_ANY, CLI_STR("Quit session"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("quit"), cli_cmd_builtin_quit, CLI_PRIV_USER,
+                        CLI_MODE_ANY, CLI_STR("Quit session")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("enable"), cli_cmd_builtin_enable, CLI_PRIV_USER,
-                        CLI_MODE_EXEC, CLI_STR("Activate Privileged mode"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("enable"), cli_cmd_builtin_enable,
+                        CLI_PRIV_USER, CLI_MODE_EXEC,
+                        CLI_STR("Activate Privileged mode")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("disable"), cli_cmd_builtin_disable,
-                        CLI_PRIV_PRIVILEGED, CLI_MODE_ENABLE, CLI_STR("Leave Privileged mode"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("disable"), cli_cmd_builtin_disable,
+                        CLI_PRIV_PRIVILEGED, CLI_MODE_ENABLE,
+                        CLI_STR("Leave Privileged mode")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("end"), cli_cmd_builtin_end, CLI_PRIV_PRIVILEGED,
-                        CLI_MODE_CONFIG, CLI_STR("Return to exec"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("end"), cli_cmd_builtin_end,
+                        CLI_PRIV_PRIVILEGED, CLI_MODE_CONFIG,
+                        CLI_STR("Return to exec")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("configure"), cli_cmd_builtin_configure,
-                        CLI_PRIV_PRIVILEGED, CLI_MODE_ENABLE, CLI_STR("Config mode"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("configure"), cli_cmd_builtin_configure,
+                        CLI_PRIV_PRIVILEGED, CLI_MODE_ENABLE,
+                        CLI_STR("Config mode")) != CLI_CMD_INVALID) &&
+       ok;
 
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("help"), cli_cmd_builtin_help, CLI_PRIV_USER,
-                        CLI_MODE_ANY, CLI_STR("Show commands"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("help"), cli_cmd_builtin_help, CLI_PRIV_USER,
+                        CLI_MODE_ANY, CLI_STR("Show commands")) != CLI_CMD_INVALID) &&
+       ok;
 
 #if CLI_ENABLE_HISTORY
-  (void)cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("history"), cli_cmd_builtin_history,
-                        CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Command history"));
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("history"), cli_cmd_builtin_history,
+                        CLI_PRIV_USER, CLI_MODE_ANY,
+                        CLI_STR("Command history")) != CLI_CMD_INVALID) &&
+       ok;
 #endif
 
-  if (cli->ansi_supported) {
+  if (cli != NULL && cli->ansi_supported) {
     h_clear = cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("clear"), cli_cmd_builtin_clear_screen,
                               CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Clear screen"));
-    (void)h_clear;
+    ok = (h_clear != CLI_CMD_INVALID) && ok;
 #if CLI_ENABLE_ALIASES
-    (void)cli_cmd_add_alias(cli, h_clear, CLI_STR("cls"));
+    ok = (cli_cmd_add_alias(cli, h_clear, CLI_STR("cls")) == CLI_OK) && ok;
 #endif
   }
 
   h_usage = cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("usage"), cli_cmd_builtin_usage,
                             CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Usage information"));
+  ok = (h_usage != CLI_CMD_INVALID) && ok;
 
-  (void)cli_add_command(cli, h_usage, CLI_STR("commands"), cli_cmd_builtin_usage_commands,
-                        CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Usage Commands"));
-  (void)cli_add_command(cli, h_usage, CLI_STR("keys"), cli_cmd_builtin_usage_keys, CLI_PRIV_USER,
-                        CLI_MODE_ANY, CLI_STR("Usage Keys"));
+  ok = (cli_add_command(cli, h_usage, CLI_STR("commands"), cli_cmd_builtin_usage_commands,
+                        CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Usage Commands")) != CLI_CMD_INVALID) &&
+       ok;
+  ok = (cli_add_command(cli, h_usage, CLI_STR("keys"), cli_cmd_builtin_usage_keys, CLI_PRIV_USER,
+                        CLI_MODE_ANY, CLI_STR("Usage Keys")) != CLI_CMD_INVALID) &&
+       ok;
+
+  return ok ? CLI_OK : CLI_ERR;
 }
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_exit(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
@@ -570,7 +608,11 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
   bool needs_secret = False;
 #endif
 
-  if (cli->privilege >= CLI_PRIV_PRIVILEGED || !needs_secret) {
+  if (cli_state_is_auth_input(cli)) {
+    /* Run programmatically while credentials are being asked for (login, a pending enable
+     * password, a lockout): the user is not at the command prompt, nothing to enable. */
+    rc = CLI_ERR;
+  } else if (cli->privilege >= CLI_PRIV_PRIVILEGED || !needs_secret) {
     rc = cli_set_mode(cli, CLI_MODE_ENABLE);
     if (rc == CLI_OK) {
       cli_set_privilege(cli, CLI_PRIV_PRIVILEGED);
@@ -584,8 +626,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
     cli->auth_resume_state = cli->auth_state;
     cli_reset_input(cli);
     cli->auth_state = CLI_AUTH_ENABLE_MODE_PASSWORD;
-    CLI_WSTR(cli, "Password: ");
-    cli_flush(cli);
+    cli_input_prompt_changed(cli);
   }
 #endif
 
@@ -651,8 +692,9 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_history(cli_struct_t *cli, const char *cmd
         CLI_WSTR(cli, "% Invalid history index.\r\n");
         rc = CLI_ERR;
       } else {
-        /* Only record the request: the caller loads the entry into the line editor once
-         * this command (and any command that invoked it) has finished. */
+        /* Only record the request: when this command was typed (or run by cli_exec() from
+         * outside any command), the entry is loaded into the free line editor once it has
+         * finished; a 'history N' run from inside another command is discarded. */
         cli->history_replay = cli_history_index(
             cli, (cli_history_idx_t)((uint32_t)cli->history_count - n_val + 1U));
         rc = CLI_EXEC_REPLAY_INPUT;
@@ -806,6 +848,9 @@ OPENLIBCLI_API void cli_start(cli_struct_t *cli) {
     cli_session_reset(cli);
     cli->eol_prev = 0U;
     cli->tx_error = False;
+#if CLI_ENABLE_AUTH
+    cli->auth_requested = False; /* a login requested for the previous connection */
+#endif
     cli_idle_period_restart(cli);
 #if CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_TIME_SOURCE
     if (cli->time_source != NULL) {
@@ -850,7 +895,8 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
 #endif
 
 #if CLI_ENABLE_AUTH
-    if (cli->require_auth) {
+    if (cli->require_auth || cli->auth_requested) {
+      cli->auth_requested = False;
       cli->auth_attempts = 0;
       cli->auth_lockout_started_ts = 0UL;
       cli_auth_prompt_username(cli);
@@ -891,6 +937,15 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
       }
     }
 #endif
+
+    if (active && cli->session_state != CLI_SESSION_RUN) {
+      /* The idle policy or a callback restarted the session: pending input waits until the
+       * banner and the login prompt / prompt have been shown. Or a callback stopped it. */
+      active = False;
+      if (cli->session_state == CLI_SESSION_STOP) {
+        result = CLI_ERR_QUIT;
+      }
+    }
 
 #if CLI_ENABLE_AUTH
     if (active && cli->auth_state == CLI_AUTH_LOCKOUT && cli_auth_lockout_expired(cli)) {
@@ -942,6 +997,12 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
               keep_going = False;
             } else if (cli->tx_error) {
               /* The peer is gone: do not run further commands nobody will see. */
+              keep_going = False;
+            } else if (cli->session_state == CLI_SESSION_STOP) {
+              /* A command stopped the session (e.g. cli_exec("quit") with its own result
+               * CLI_OK): report it now, like the callback path. */
+              result = CLI_ERR_QUIT;
+              active = False;
               keep_going = False;
             } else if (cli->session_state != CLI_SESSION_RUN) {
               /* Session restarted (quit/exit policy): leave the remaining input for the
@@ -1110,10 +1171,11 @@ OPENLIBCLI_API void cli_done(cli_struct_t *cli) {
 #if CLI_ENABLE_TIMMING_STATS
     if (cli->tick_stats.count > 0U) {
       (void)cli_println(cli, "\r\n--- Tick Timing Stats ---");
-      (void)cli_println(cli, "  Ticks   : %u", (unsigned)cli->tick_stats.count);
-      (void)cli_println(cli, "  Min (us): %u", (unsigned)cli->tick_stats.min_us);
-      (void)cli_println(cli, "  Avg (us): %u", (unsigned)cli->tick_stats.avg_us);
-      (void)cli_println(cli, "  Max (us): %u", (unsigned)cli->tick_stats.max_us);
+      /* unsigned long: the values are 32-bit, an unsigned int may have only 16 (AVR). */
+      (void)cli_println(cli, "  Ticks   : %lu", (unsigned long)cli->tick_stats.count);
+      (void)cli_println(cli, "  Min (us): %lu", (unsigned long)cli->tick_stats.min_us);
+      (void)cli_println(cli, "  Avg (us): %lu", (unsigned long)cli->tick_stats.avg_us);
+      (void)cli_println(cli, "  Max (us): %lu", (unsigned long)cli->tick_stats.max_us);
     }
 #endif
     cli->session_state = CLI_SESSION_STOP;
@@ -1137,17 +1199,24 @@ OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
 OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli) {
   if (cli != NULL) {
 #if CLI_ENABLE_AUTH
-    /* Nothing from the current identity survives into the next login. */
-    cli_nav_reset(cli);
-    cli_set_privilege(cli, CLI_PRIV_USER);
+    if (cli->session_state == CLI_SESSION_INIT || cli->session_state == CLI_SESSION_SHOW_BANNER) {
+      /* (Re)starting: the fresh session has no identity yet; it begins at the login prompt,
+       * after the banner. */
+      cli->auth_requested = True;
+    } else {
+      /* Nothing from the current identity survives into the next login. */
+      cli_nav_reset(cli);
+      cli_set_privilege(cli, CLI_PRIV_USER);
 #if CLI_ENABLE_HISTORY
-    (void)cli_clear_history(cli);
+      (void)cli_clear_history(cli);
 #endif
-    cli->auth_attempts = 0;
-    cli->enable_attempts = 0;
-    cli->auth_lockout_started_ts = 0UL;
-    cli_auth_reset_work(cli);
-    cli_auth_prompt_username(cli);
+      cli->auth_attempts = 0;
+      cli->enable_attempts = 0;
+      cli->auth_lockout_started_ts = 0UL;
+      cli_auth_reset_work(cli);
+      cli->auth_state = CLI_AUTH_USERNAME;
+      cli_input_prompt_changed(cli);
+    }
 #else
     (void)cli;
 #endif
@@ -1228,7 +1297,9 @@ OPENLIBCLI_API int8_t cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, cons
       if (slot < 0) {
         slot = free_slot;
       }
-      if (slot < 0) {
+      if (strlen(name) >= (size_t)CLI_MAX_MODE_NAME_LEN) {
+        rc = CLI_ERR; /* a cut-down name would show a different mode in the prompt */
+      } else if (slot < 0) {
         rc = CLI_ERR_NOMEM;
       } else {
         cli->mode_name_ids[slot] = mode;
@@ -1346,6 +1417,9 @@ OPENLIBCLI_API int8_t cli_clear_history(cli_struct_t *cli) {
 #if CLI_HISTORY_RESTORE_PREBROWSE_LINE
     cli->history_saved[0] = '\0';
 #endif
+#if CLI_HISTORY_INDEX_SELECTION
+    cli->history_cleared = True;
+#endif
 
     rc = CLI_OK;
   }
@@ -1367,6 +1441,11 @@ OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli) {
         (cli->idle_timeout_cb != NULL ||
          cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_CLOSE ||
          (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION && cli->idle_armed));
+#if CLI_ENABLE_AUTH
+    /* A lockout accepts no input and ends by itself; restarting the session would end it
+     * early. The idle period starts again when the lockout is over. */
+    check_timeout = check_timeout && (cli->auth_state != CLI_AUTH_LOCKOUT);
+#endif
 
     if (check_timeout) {
       uint32_t now = cli->time_source(cli->time_source_ctx);
@@ -1822,8 +1901,16 @@ static int8_t cli_exec_area(cli_struct_t *cli, char **area, size_t *size) {
  */
 static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
   bool top_level = (cli->exec_depth == 0U);
+  /* Run from outside any command (a callback, the main loop) while a prompt is on screen:
+   * the output goes below it, and the prompt with what was typed so far is shown again. */
+  bool on_prompt = top_level && (cli->session_state == CLI_SESSION_RUN);
+  bool redrawn = False;
   cli_len_t saved_used = cli->exec_used;
   int8_t rc;
+
+  if (on_prompt) {
+    CLI_WSTR(cli, CLI_CRLF);
+  }
 
   cli->exec_used = (cli_len_t)(line - cli->input) + (cli_len_t)len + 1;
   rc = cli_execute(cli, line, False);
@@ -1839,13 +1926,21 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
   if (rc == CLI_EXEC_REPLAY_INPUT) {
     /* Recall into the editor only when it is free: not nested, no password prompt and no
      * line being typed. */
-    if (!(top_level && !cli_state_is_auth_input(cli) && cli->input_len == 0 &&
-          cli_history_replay_load(cli))) {
+    if (top_level && !cli_state_is_auth_input(cli) && cli->input_len == 0 &&
+        cli_history_replay_load(cli)) {
+      redrawn = True; /* loaded and redrawn for editing */
+    } else {
       cli->history_replay = (cli_history_idx_t)-1;
       rc = CLI_OK;
     }
   }
 #endif
+
+  /* The prompt for what is asked for now: the command line, or a login / password prompt
+   * the command requested. Not after a restart or stop (the banner or nothing follows). */
+  if (on_prompt && !redrawn && cli->session_state == CLI_SESSION_RUN) {
+    cli_redisplay_input(cli);
+  }
 
   return rc;
 }
@@ -2124,10 +2219,12 @@ static void cli_text_copy(char *dst, const char *src, size_t size, bool progmem)
  *
  * Always inspects @p max_len bytes positions, so the comparison time reveals
  * neither the length of a matching prefix nor the stored secret's length.
+ * Characters after a terminating NUL are never read.
  *
- * @param[in] a        First NUL-terminated string (shorter than @p max_len).
- * @param[in] b        Second NUL-terminated string (shorter than @p max_len).
- * @param[in] max_len  Size of the buffers the strings live in.
+ * @param[in] a        First NUL-terminated string.
+ * @param[in] b        Second NUL-terminated string.
+ * @param[in] max_len  Positions compared. At least one of the strings must be shorter, so
+ *                     a longer other string differs at that string's terminator.
  *
  * @return @c true when both strings are identical.
  */
@@ -2796,6 +2893,58 @@ static void cli_clear_input(cli_struct_t *cli) {
   }
 }
 
+/**
+ * @brief Show the prompt for what is asked for now, with what was typed so far.
+ *
+ * The command prompt, or a credential prompt (a password is never shown); nothing during
+ * a lockout. Used at the start of a line: after a command, and after output that was not
+ * caused by the user's own line (a @c cli_exec() from a callback).
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_redisplay_input(cli_struct_t *cli) {
+  bool editor = True;
+
+#if CLI_ENABLE_AUTH
+  editor = !cli_state_is_auth_input(cli);
+  if (cli->auth_state == CLI_AUTH_USERNAME) {
+    CLI_WSTR(cli, "Username: ");
+    cli_raw_write(cli, (const uint8_t *)cli->input, cli->input_len);
+  } else if (cli_auth_secret_input(cli)) {
+    CLI_WSTR(cli, "Password: ");
+  } else {
+    /* The command line, or a lockout (no prompt). */
+  }
+#endif
+  if (!editor) {
+    /* Credential prompt shown above. */
+  } else if (cli->input_len > 0) {
+    cli_redraw_line(cli);
+  } else {
+    cli_show_prompt(cli);
+  }
+  cli_flush(cli);
+}
+
+#if CLI_ENABLE_AUTH
+/**
+ * @brief Show the prompt after what is asked for changed (a login or password prompt
+ *        requested by a command or a callback).
+ *
+ * Inside a command it is shown once the command has finished, after its output
+ * (@c cli_after_command(), @c cli_exec()); outside any command it is shown now, on a
+ * fresh line. Before the session runs, the session start shows it.
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_input_prompt_changed(cli_struct_t *cli) {
+  if (cli->exec_depth == 0U && cli->session_state == CLI_SESSION_RUN) {
+    CLI_WSTR(cli, CLI_CRLF);
+    cli_redisplay_input(cli);
+  }
+}
+#endif
+
 /* AVR PROGMEM Helpers ------------------------------------------------------------------*/
 
 #if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
@@ -2989,10 +3138,6 @@ static void cli_history_add(cli_struct_t *cli, const char *line) {
     if (cli->history_count < CLI_MAX_HISTORY) {
       cli->history_count++;
     }
-    cli->history_nav = (cli_history_idx_t)0;
-#if CLI_HISTORY_RESTORE_PREBROWSE_LINE
-    cli->history_saved[0] = '\0';
-#endif
   }
 }
 
@@ -3450,8 +3595,10 @@ static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handl
   cli_cmd_handle_t first = CLI_CMD_INVALID;
   cli_cmd_handle_t exact = CLI_CMD_INVALID;
   cli_len_t count = 0;
+  /* An empty word (a quoted "") names no command: as a prefix it would match them all. */
+  cli_poolsize_t scan = (word[0] != '\0') ? cli->cmd_pool_size : 0;
 
-  for (cli_poolsize_t i = 0; i < cli->cmd_pool_size; i++) {
+  for (cli_poolsize_t i = 0; i < scan; i++) {
     const cli_cmd_struct_t *cmd = &cli->cmd_pool[i];
     if (!cli_cmd_selectable(cli, cmd, parent)) {
       continue;
@@ -3503,20 +3650,22 @@ static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handl
 }
 
 /**
- * @brief Test whether @p parent has at least one registered direct child.
+ * @brief Test whether @p parent has a direct child the session can use now.
  *
+ * Only children allowed at the current privilege and mode count (hidden ones included):
+ * a command whose subcommands are all out of reach takes arguments and is no submenu,
+ * so it behaves the same as without them and does not reveal they exist.
+ *
+ * @param[in] cli     Active CLI session.
  * @param[in] parent  Parent command handle.
  *
- * @return @c true when a direct child exists, otherwise @c false.
+ * @return @c true when such a child exists, otherwise @c false.
  */
 static bool cli_cmd_has_children(cli_struct_t *cli, cli_cmd_handle_t parent) {
   bool has_children = False;
 
-  for (cli_poolsize_t i = 0; i < cli->cmd_pool_size; i++) {
-    if (CLI_CMD_IS_IN_USE(&cli->cmd_pool[i]) && cli->cmd_pool[i].parent == parent) {
-      has_children = True;
-      break;
-    }
+  for (cli_poolsize_t i = 0; i < cli->cmd_pool_size && !has_children; i++) {
+    has_children = cli_cmd_selectable(cli, &cli->cmd_pool[i], parent);
   }
 
   return has_children;
@@ -4146,7 +4295,7 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
           if (cli->input_len == 0) {
             /* EOF on empty line behaves exactly like the 'quit' command (hook + policy). */
             CLI_WSTR(cli, CLI_CRLF);
-            cli_after_command(cli, cli_cmd_builtin_quit(cli, "quit", 0, NULL), &rc);
+            cli_after_command(cli, cli_quit_key(cli), &rc);
           } else {
             cli_delete_char(cli);
           }
@@ -4217,11 +4366,34 @@ static void cli_after_command(cli_struct_t *cli, int8_t exec_rc, int8_t *rc) {
     *rc = exec_rc;
   } else if (exec_rc == CLI_EXEC_REPLAY_INPUT) {
     /* The recalled line is already redrawn for editing. */
-  } else if (cli->session_state == CLI_SESSION_RUN && !cli_state_is_auth_input(cli)) {
-    cli_show_prompt(cli);
+  } else if (cli->session_state == CLI_SESSION_RUN) {
+    /* The command prompt, or what the command asked for (Username:, Password:). */
+    cli_redisplay_input(cli);
   } else {
-    /* Restarting (banner follows) or a password prompt is pending. */
+    /* Restarting: the banner follows. */
   }
+}
+
+/**
+ * @brief Ctrl-D on an empty line: run the quit command (hook and policy) as if 'quit'
+ *        had been typed, with the same output handling as any command.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return Result of @c cli_cmd_builtin_quit().
+ */
+static int8_t cli_quit_key(cli_struct_t *cli) {
+  bool outermost;
+  int8_t rc;
+
+  /* Reserve the (empty) editor line like a typed one, so a cli_exec() made by the quit hook
+   * places its line after it. */
+  cli->exec_used = cli->input_len + 1;
+  outermost = cli_command_begin(cli);
+  rc = cli_cmd_builtin_quit(cli, "quit", 0, NULL);
+  cli_command_end(cli, outermost);
+
+  return rc;
 }
 
 /**
@@ -4313,18 +4485,9 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
  */
 static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
   int8_t rc = CLI_OK;
-  bool outermost;
-
-  cli->exec_depth++;
-  outermost = (cli->exec_depth == 1U);
+  bool outermost = cli_command_begin(cli);
 #if !CLI_ENABLE_HISTORY
   (void)interactive; /* only decides whether the line is recorded */
-#endif
-
-#if CLI_ENABLE_PIPE_FILTER
-  if (outermost) {
-    cli_filter_reset(cli);
-  }
 #endif
 
   /* Trim leading/trailing whitespace */
@@ -4341,6 +4504,7 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
     char history_line[CLI_MAX_INPUT_LEN];
     if (interactive) {
       (void)cli_strlcpy(history_line, start, CLI_MAX_INPUT_LEN);
+      cli->history_cleared = False;
     }
 #else
     if (interactive) {
@@ -4384,16 +4548,55 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
 
 #if CLI_ENABLE_HISTORY
 #if CLI_HISTORY_INDEX_SELECTION
-    if (interactive && rc != CLI_EXEC_REPLAY_INPUT) {
+    /* Recorded after it ran (so 'history N' counts the entries before it), unless the
+     * command cleared the history: the next login must not see it. */
+    if (interactive && rc != CLI_EXEC_REPLAY_INPUT && !cli->history_cleared) {
       cli_history_add(cli, history_line);
     }
 #endif
 #endif
   }
 
+  cli_command_end(cli, outermost);
+  return rc;
+}
+
+/**
+ * @brief Enter command execution (shared by typed lines, @c cli_exec() and the Ctrl-D quit).
+ *
+ * Nested executions share the outer command's output state; the outermost one starts it
+ * without a pipe filter.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return @c true for the outermost execution, which must pass it to @c cli_command_end().
+ */
+static bool cli_command_begin(cli_struct_t *cli) {
+  bool outermost;
+
+  cli->exec_depth++;
+  outermost = (cli->exec_depth == 1U);
+#if CLI_ENABLE_PIPE_FILTER
   if (outermost) {
-    /* Deliver a trailing partial line (e.g. cli_print() without '\n') while the filter is
-     * still active, and make sure the next prompt starts on a fresh line. */
+    cli_filter_reset(cli);
+  }
+#endif
+
+  return outermost;
+}
+
+/**
+ * @brief Leave command execution entered with @c cli_command_begin().
+ *
+ * The outermost execution delivers a trailing partial line (e.g. @c cli_print() without
+ * '\\n') while the filter is still active, emits a deferred filter result, and makes sure
+ * the next prompt starts on a fresh line.
+ *
+ * @param[in] cli        Active CLI session.
+ * @param[in] outermost  Value returned by the matching @c cli_command_begin().
+ */
+static void cli_command_end(cli_struct_t *cli, bool outermost) {
+  if (outermost) {
     cli_output_end_line(cli);
 #if CLI_ENABLE_PIPE_FILTER
     cli_filter_flush(cli);
@@ -4402,7 +4605,6 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
   }
 
   cli->exec_depth--;
-  return rc;
 }
 
 /* Authentication -----------------------------------------------------------------------*/
@@ -4461,12 +4663,14 @@ static bool cli_auth_lockout_expired(const cli_struct_t *cli) {
  */
 static void cli_auth_lockout_end(cli_struct_t *cli) {
   cli->auth_lockout_started_ts = 0UL;
-  cli_auth_reset_work(cli);
+  cli_idle_period_restart(cli); /* the idle timer was paused during the lockout */
 
   if (cli->auth_resume_state == CLI_AUTH_USERNAME) {
     cli->auth_attempts = 0;
-    cli_auth_prompt_username(cli);
+    cli_auth_prompt_username(cli); /* a new login: forgets the previous username too */
   } else {
+    /* Still logged in: the username stays (the enable callback receives it). */
+    cli_reset_input(cli);
     cli->enable_attempts = 0;
     cli->auth_state = cli->auth_resume_state;
     cli_show_prompt(cli);
@@ -4581,8 +4785,18 @@ static bool cli_auth_secret_input(const cli_struct_t *cli) {
          (cli->auth_state == CLI_AUTH_PASSWORD || cli->auth_state == CLI_AUTH_ENABLE_MODE_PASSWORD);
 }
 
+/**
+ * @brief Number of characters the current credential prompt accepts.
+ *
+ * One more than the longest valid entry: an entry typed too long keeps its extra
+ * character and therefore never matches, instead of being cut down to a valid one.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return Maximum input length (below @c CLI_MAX_INPUT_LEN, see the config check).
+ */
 static cli_len_t cli_auth_input_limit(const cli_struct_t *cli) {
-  cli_len_t limit = CLI_MAX_INPUT_LEN;
+  cli_len_t limit = CLI_MAX_INPUT_LEN - 1;
 
   if (cli != NULL) {
     if (cli->auth_state == CLI_AUTH_USERNAME) {
@@ -4603,7 +4817,7 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli) {
   int8_t rc = CLI_OK;
 
   if (cli->auth_state == CLI_AUTH_USERNAME) {
-    (void)cli_strlcpy(cli->auth_username, cli->input, CLI_MAX_USERNAME_LEN);
+    (void)cli_strlcpy(cli->auth_username, cli->input, sizeof(cli->auth_username));
     cli_reset_input(cli);
     cli->auth_state = CLI_AUTH_PASSWORD;
     CLI_WSTR(cli, "Password: ");
@@ -4731,10 +4945,22 @@ static bool cli_eol_pair(cli_struct_t *cli, int byte) {
  * forgets the line. The executing line is cleared once it has finished
  * (@c cli_submit_line(), @c cli_exec_area_run()).
  *
+ * A partly typed password or enable secret is erased, not just forgotten (a restart,
+ * a new login or Ctrl-U while it is typed). It always occupies @c input[0..input_len):
+ * lines run by @c cli_exec() are placed after it.
+ *
  * @param[in] cli  Active CLI session.
  */
 static void cli_reset_input(cli_struct_t *cli) {
   if (cli != NULL) {
+#if CLI_ENABLE_AUTH
+    if (cli_auth_secret_input(cli)) {
+      volatile char *p = cli->input;
+      for (cli_len_t i = 0; i < cli->input_len; i++) {
+        p[i] = '\0';
+      }
+    }
+#endif
     if (cli->exec_depth == 0U) {
       cli->input[0] = '\0';
     }
@@ -4963,6 +5189,14 @@ static int8_t cli_submit_line(cli_struct_t *cli) {
   int8_t rc = CLI_ERR;
 
   if (cli != NULL) {
+#if CLI_ENABLE_HISTORY
+    /* Browsing ends with every submitted line, also one that is not stored (empty, or the
+     * same as the newest entry): the next Up starts again from the newest entry. */
+    cli->history_nav = (cli_history_idx_t)0;
+#if CLI_HISTORY_RESTORE_PREBROWSE_LINE
+    cli->history_saved[0] = '\0';
+#endif
+#endif
     /* The typed line is executed in place; reserve it so cli_exec() calls made by the
      * command place their lines after it. */
     cli->exec_used = cli->input_len + 1;
@@ -5035,7 +5269,7 @@ static void cli_auth_clear_input(cli_struct_t *cli) {
 
 static void cli_auth_insert_char(cli_struct_t *cli, char c) {
   if (cli != NULL) {
-    if (cli->input_len < cli_auth_input_limit(cli) - 1) {
+    if (cli->input_len < cli_auth_input_limit(cli)) {
       cli->input[cli->input_len++] = c;
       cli->input[cli->input_len] = '\0';
       cli->cursor = cli->input_len;
@@ -5105,8 +5339,11 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
   case ESC_STATE_CSI_REST:
   case ESC_STATE_CSI_IGNORE:
     if (b >= ASCII_DIGIT_0 && b <= ASCII_DIGIT_9 && cli->esc_state == ESC_STATE_CSI) {
-      cli->esc_param = cli->esc_param * 10 + (b - ASCII_DIGIT_0);
-      if (cli->esc_param > ESC_PARAM_MAX) {
+      int digit = b - ASCII_DIGIT_0;
+      /* Saturate before multiplying: 9999 * 10 does not fit a 16-bit int (AVR). */
+      if (cli->esc_param <= (ESC_PARAM_MAX - digit) / 10) {
+        cli->esc_param = cli->esc_param * 10 + digit;
+      } else {
         cli->esc_param = ESC_PARAM_MAX;
       }
     } else if (is_param) {

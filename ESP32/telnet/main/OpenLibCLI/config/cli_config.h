@@ -8,7 +8,7 @@
  * Quick reference (desktop defaults):
  *   Capacity: CLI_MAX_ARGS 32, CLI_MAX_NAME_LEN 64,
  *             CLI_MAX_HELP_LEN 128, CLI_MAX_ALIASES 2
- *   Input:    CLI_MAX_INPUT_LEN 512, CLI_MAX_HISTORY 50
+ *   Input:    CLI_MAX_INPUT_LEN 512, CLI_MAX_HISTORY 10
  *   Session:  CLI_MAX_CONTEXT_DEPTH 16, CLI_MAX_MODES 16, CLI_MAX_MODE_NAME_LEN 32
  *   Auth:     CLI_MAX_USERS 8, CLI_MAX_USERNAME_LEN 32, CLI_MAX_PASSWORD_LEN 64,
  *             CLI_MAX_ENABLE_SECRET_LEN 64
@@ -16,7 +16,7 @@
  *   Timing:   CLI_TRANSPORT_POLL_MS 1000, CLI_DEFAULT_IDLE_TIMEOUT_SEC 10
  *   Features: CLI_ENABLE_HISTORY 1, TAB_COMPLETION 1, COMMAND_HELP 1, BANNER 1,
  *             AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
- *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 0
+ *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 1
  *
  * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
  *
@@ -42,11 +42,11 @@ extern "C" {
  *=======================================================================================*/
 
 #ifndef CLI_MAX_ARGS
-#define CLI_MAX_ARGS 32 /**< Maximum tokens after tokenising one input line. */
+#define CLI_MAX_ARGS 32 /**< Token slots per line: up to CLI_MAX_ARGS - 1 tokens (min 2). */
 #endif
 
 #ifndef CLI_MAX_NAME_LEN
-#define CLI_MAX_NAME_LEN 64 /**< Maximum length of a single command keyword. */
+#define CLI_MAX_NAME_LEN 64 /**< Command keyword buffer incl. NUL (built-ins need >= 10). */
 #endif
 
 #ifndef CLI_MAX_HELP_LEN

@@ -3,7 +3,9 @@
  * @brief Lightweight integer & floating-point parsing and formatting utilities.
  *
  * Provides two families of parse APIs:
- *   - `parse_*`       — hand-rolled, zero-libc dependency (~200 bytes each)
+ *   - `parse_*`       — strict decimal syntax (no whitespace, no hex/octal prefixes for
+ *                       decimal values). Integers are hand-rolled without libc; floats
+ *                       are checked here and converted by `strtod` / `strtof`.
  *   - `strtol_parse_*` — backed by `strtol`/`strtoul`/`strtof`/`strtod`
  *                       (auto hex/octal detection, whitespace skips, float)
  *
@@ -248,17 +250,18 @@ OPENLIBCLI_API bool parse_i8(const char *s, int8_t *out);
 /**
  * @brief Parse a decimal floating-point string into a double.
  *
- * Handles optional sign (+/-), decimal point, and scientific notation (e/E).
- * Zero libc dependency — uses only built-in double arithmetic.  Any number of
- * digits is accepted: the first 19-20 significant digits form the mantissa
- * (rounded half-up on the next digit) and further digits only affect the
- * decimal exponent. The scaling by powers of ten rounds once per factor of
- * 10^22, so the result is within a few units in the last place of the correctly
- * rounded value (exact for short decimals with small exponents); use
- * @c strtol_parse_double when exact IEEE rounding is required.
+ * Accepts an optional sign (+/-), digits with an optional decimal point, and an
+ * optional exponent (e/E). The whole string must match: no whitespace, no
+ * hexadecimal floats, no "inf" / "nan". The checked text is converted by
+ * @c strtod(), which rounds correctly, so the text of every double (including
+ * DBL_MAX printed with @c %.17g) reads back exactly.
  *
- * Overflow (a result that is not finite) returns false. Underflow returns 0.0
- * or a subnormal value with true. "inf" and "nan" are not accepted.
+ * Overflow (a value that rounds to infinity) returns false. Underflow returns
+ * 0.0 or a subnormal value with true.
+ *
+ * @note The decimal point is '.'. @c strtod() follows the C locale's decimal
+ *       point, so an application that switches @c LC_NUMERIC to a locale using
+ *       ',' makes every fractional input fail.
  *
  * @param[in]  s   NUL-terminated decimal string.
  * @param[out] out Parsed value on success.
@@ -269,9 +272,10 @@ OPENLIBCLI_API bool parse_f64(const char *s, double *out);
 /**
  * @brief Parse a decimal floating-point string into a float.
  *
- * Delegates to parse_f64 then narrows to float (round to nearest). Input that
- * rounds to ±FLT_MAX is accepted; returns false if the value would round to
- * infinity in float.
+ * Same syntax as @c parse_f64, converted directly to float by @c strtof()
+ * (@c strtod() on AVR, where double is float), so the result is rounded once,
+ * correctly. Input that rounds to ±FLT_MAX is accepted; returns false if the
+ * value rounds to infinity in float. The locale note of @c parse_f64 applies.
  *
  * @param[in]  s   NUL-terminated decimal string.
  * @param[out] out Parsed value on success.
@@ -543,7 +547,8 @@ OPENLIBCLI_API int format_i8(char *buf, int size, int8_t val);
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
  * @param[in]  val  Value to format.
- * @return Number of characters written (always 2).
+ * @return Number of characters written: 2, or 0 (and an empty string) when @p size is
+ *         smaller than 3.
  */
 OPENLIBCLI_API int format_hex8(char *buf, int size, uint8_t val);
 

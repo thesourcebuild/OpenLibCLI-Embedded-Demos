@@ -1,5 +1,5 @@
 /**
- * @file cli_arduino_config.h
+ * @file cli_embedded_config.h
  * @brief Embedded-specific compile-time capacity profile for OpenLibCLI.
  *
  * Two profiles are provided:
@@ -42,10 +42,10 @@ extern "C" {
  *-----------------------------------------------------------------------------*/
 
 #ifndef CLI_MAX_ARGS
-#define CLI_MAX_ARGS 4 /**< AVR: max tokenised arguments. */
+#define CLI_MAX_ARGS 4 /**< AVR: token slots per line (CLI_MAX_ARGS - 1 tokens, min 2). */
 #endif
 #ifndef CLI_MAX_NAME_LEN
-#define CLI_MAX_NAME_LEN 8 /**< AVR: max command keyword length. */
+#define CLI_MAX_NAME_LEN 10 /**< AVR: command keyword buffer incl. NUL ("configure" needs 10). */
 #endif
 #ifndef CLI_MAX_HELP_LEN
 #define CLI_MAX_HELP_LEN 10 /**< AVR: max help string length. */
@@ -99,7 +99,7 @@ extern "C" {
 #define CLI_MAX_MODES 3 /**< AVR: distinct CLI modes. */
 #endif
 #ifndef CLI_MAX_MODE_NAME_LEN
-#define CLI_MAX_MODE_NAME_LEN 4 /**< AVR: max mode name length. */
+#define CLI_MAX_MODE_NAME_LEN 7 /**< AVR: mode name buffer incl. NUL ("config" needs 7). */
 #endif
 #ifndef CLI_ENABLE_MODE_NAMES
 #define CLI_ENABLE_MODE_NAMES 0 /**< AVR: mode-name storage disabled to save 12B SRAM. */
@@ -155,7 +155,9 @@ extern "C" {
  *  Transport / Timing
  *-----------------------------------------------------------------------------*/
 
+#ifndef CLI_ENABLE_TIMMING_STATS
 #define CLI_ENABLE_TIMMING_STATS 0 /**< AVR: tick-timing stats disabled to save SRAM. */
+#endif
 
 /*-----------------------------------------------------------------------------
  *  Feature Flags — computed
@@ -180,7 +182,7 @@ extern "C" {
  *-----------------------------------------------------------------------------*/
 
 #ifndef CLI_MAX_ARGS
-#define CLI_MAX_ARGS 12 /**< max tokenised arguments. */
+#define CLI_MAX_ARGS 12 /**< token slots per line (CLI_MAX_ARGS - 1 tokens, min 2). */
 #endif
 #ifndef CLI_MAX_NAME_LEN
 #define CLI_MAX_NAME_LEN 20 /**< max command keyword length. */
@@ -293,7 +295,9 @@ extern "C" {
  *  Transport / Timing
  *-----------------------------------------------------------------------------*/
 
+#ifndef CLI_ENABLE_TIMMING_STATS
 #define CLI_ENABLE_TIMMING_STATS 0 /**< tick-timing stats disabled. */
+#endif
 
 /*-----------------------------------------------------------------------------
  *  Feature Flags — computed
