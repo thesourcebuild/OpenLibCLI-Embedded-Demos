@@ -32,6 +32,9 @@
 /** @brief Maximum decimal digits in a uint64_t without overflow. */
 #define U64_MAX_DIGITS (20U)
 
+/** @brief Maximum decimal digits in a uint32_t without overflow. */
+#define U32_MAX_DIGITS (10U)
+
 /*=======================================================================================
  * Private Macros
  *=======================================================================================*/
@@ -69,83 +72,41 @@ static uint8_t dec_value(char c);
 static uint8_t hex_value(char c);
 static bool is_decimal_float_text(const char *s);
 static bool strtol_unsigned_text_ok(const char *s);
+static bool parse_dec_u32(const char *s, uint32_t max, uint32_t *out);
+static bool parse_dec_u64(const char *s, uint64_t max, uint64_t *out);
+static bool parse_dec_i32(const char *s, int32_t min, int32_t max, int32_t *out);
+static int put_digits(char *buf, int size, const char *tmp, int len);
+static int put_minus(char *buf, int size, int digits);
 
 /*=======================================================================================
  * Public Functions — hand-rolled integer parsing
  *=======================================================================================*/
 
 bool parse_u64(const char *s, uint64_t *out) {
-  uint64_t val = 0;
-  bool ok = (s != NULL && out != NULL);
-
-  if (ok) {
-    ok = (s[0] != '\0');
-
-    while (is_dec_digit(*s) && ok) {
-      uint8_t digit = dec_value(*s);
-      ok = (val <= ((UINT64_MAX - (uint64_t)digit) / 10ULL));
-      if (ok) {
-        val = (val * 10ULL) + (uint64_t)digit;
-        s++;
-      }
-    }
-
-    ok = (ok && *s == '\0');
-
-    if (ok) {
-      *out = val;
-    }
-  }
-
-  return ok;
+  return (s != NULL && out != NULL && parse_dec_u64(s, UINT64_MAX, out));
 }
 
 bool parse_i64(const char *s, int64_t *out) {
-  uint64_t uv = 0;
+  uint64_t mag = 0ULL;
   bool ok = (s != NULL && out != NULL);
   bool neg = false;
 
   if (ok) {
-    ok = (s[0] != '\0');
-  }
-
-  if (s != NULL && ok) {
     neg = (*s == '-');
     if (neg || *s == '+') {
       s++;
     }
-
-    /* At least one digit must follow the optional sign ("-" alone is not a number). */
-    ok = is_dec_digit(*s);
+    ok = parse_dec_u64(s, neg ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)INT64_MAX, &mag);
   }
 
-  if (s != NULL && ok) {
-    uint64_t limit = (uint64_t)INT64_MAX;
-    if (neg) {
-      limit++;
-    }
-
-    while (is_dec_digit(*s) && ok) {
-      uint8_t digit = dec_value(*s);
-      ok = (uv <= ((limit - (uint64_t)digit) / 10ULL));
-      if (ok) {
-        uv = (uv * 10ULL) + (uint64_t)digit;
-        s++;
-      }
-    }
-
-    ok = (ok && *s == '\0');
-  }
-
-  if (out != NULL && ok) {
-    if (neg) {
-      if (uv == ((uint64_t)INT64_MAX + 1ULL)) {
-        *out = INT64_MIN;
-      } else {
-        *out = -(int64_t)uv;
-      }
+  if (ok) {
+    if (!neg) {
+      *out = (int64_t)mag;
+    } else if (mag == 0ULL) {
+      *out = 0;
     } else {
-      *out = (int64_t)uv;
+      /* -(mag - 1) - 1 reaches INT64_MIN without negating it. */
+      *out = -(int64_t)(mag - 1ULL) - 1;
     }
   }
 
@@ -183,35 +144,11 @@ bool parse_hex_u64(const char *s, uint64_t *out) {
 }
 
 bool parse_u32(const char *s, uint32_t *out) {
-  uint64_t tmp = 0ULL;
-  bool ok = (out != NULL);
-
-  if (ok) {
-    ok = parse_u64(s, &tmp);
-    ok = (ok && tmp <= 0xFFFFFFFFULL);
-  }
-
-  if (out != NULL && ok) {
-    *out = (uint32_t)tmp;
-  }
-
-  return ok;
+  return (s != NULL && out != NULL && parse_dec_u32(s, UINT32_MAX, out));
 }
 
 bool parse_i32(const char *s, int32_t *out) {
-  int64_t tmp = 0LL;
-  bool ok = (out != NULL);
-
-  if (ok) {
-    ok = parse_i64(s, &tmp);
-    ok = (ok && tmp >= INT32_MIN && tmp <= INT32_MAX);
-  }
-
-  if (out != NULL && ok) {
-    *out = (int32_t)tmp;
-  }
-
-  return ok;
+  return (s != NULL && out != NULL && parse_dec_i32(s, INT32_MIN, INT32_MAX, out));
 }
 
 bool parse_hex_u32(const char *s, uint32_t *out) {
@@ -231,15 +168,10 @@ bool parse_hex_u32(const char *s, uint32_t *out) {
 }
 
 bool parse_u16(const char *s, uint16_t *out) {
-  uint64_t tmp = 0ULL;
-  bool ok = (out != NULL);
+  uint32_t tmp = 0U;
+  bool ok = (s != NULL && out != NULL && parse_dec_u32(s, UINT16_MAX, &tmp));
 
   if (ok) {
-    ok = parse_u64(s, &tmp);
-    ok = (ok && tmp <= 0xFFFFULL);
-  }
-
-  if (out != NULL && ok) {
     *out = (uint16_t)tmp;
   }
 
@@ -247,15 +179,10 @@ bool parse_u16(const char *s, uint16_t *out) {
 }
 
 bool parse_i16(const char *s, int16_t *out) {
-  int64_t tmp = 0LL;
-  bool ok = (out != NULL);
+  int32_t tmp = 0;
+  bool ok = (s != NULL && out != NULL && parse_dec_i32(s, INT16_MIN, INT16_MAX, &tmp));
 
   if (ok) {
-    ok = parse_i64(s, &tmp);
-    ok = (ok && tmp >= INT16_MIN && tmp <= INT16_MAX);
-  }
-
-  if (out != NULL && ok) {
     *out = (int16_t)tmp;
   }
 
@@ -263,15 +190,10 @@ bool parse_i16(const char *s, int16_t *out) {
 }
 
 bool parse_u8(const char *s, uint8_t *out) {
-  uint64_t tmp = 0ULL;
-  bool ok = (out != NULL);
+  uint32_t tmp = 0U;
+  bool ok = (s != NULL && out != NULL && parse_dec_u32(s, UINT8_MAX, &tmp));
 
   if (ok) {
-    ok = parse_u64(s, &tmp);
-    ok = (ok && tmp <= 0xFFULL);
-  }
-
-  if (out != NULL && ok) {
     *out = (uint8_t)tmp;
   }
 
@@ -279,15 +201,10 @@ bool parse_u8(const char *s, uint8_t *out) {
 }
 
 bool parse_i8(const char *s, int8_t *out) {
-  int64_t tmp = 0LL;
-  bool ok = (out != NULL);
+  int32_t tmp = 0;
+  bool ok = (s != NULL && out != NULL && parse_dec_i32(s, INT8_MIN, INT8_MAX, &tmp));
 
   if (ok) {
-    ok = parse_i64(s, &tmp);
-    ok = (ok && tmp >= INT8_MIN && tmp <= INT8_MAX);
-  }
-
-  if (out != NULL && ok) {
     *out = (int8_t)tmp;
   }
 
@@ -570,7 +487,6 @@ bool strtol_parse_double(const char *s, double *out) {
 int format_u64(char *buf, int size, uint64_t val) {
   char tmp[U64_MAX_DIGITS];
   int len = 0;
-  int pos = 0;
 
   do {
     uint64_t digit = val % 10ULL;
@@ -579,18 +495,7 @@ int format_u64(char *buf, int size, uint64_t val) {
     val /= 10ULL;
   } while (val != 0ULL);
 
-  /* All or nothing: a cut-off number would read as a different value. */
-  if (len < size) {
-    while (len > 0) {
-      len--;
-      buf[pos] = tmp[len];
-      pos++;
-    }
-  }
-  if (size > 0) {
-    buf[pos] = '\0';
-  }
-  return pos;
+  return put_digits(buf, size, tmp, len);
 }
 
 int format_i64(char *buf, int size, int64_t val) {
@@ -599,14 +504,7 @@ int format_i64(char *buf, int size, int64_t val) {
   if (val < 0) {
     /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
     int digits = (size >= 2) ? format_u64(&buf[1], size - 1, (uint64_t)(-(val + 1)) + 1ULL) : 0;
-    if (digits > 0) {
-      buf[0] = '-';
-      result = digits + 1;
-    } else if (size > 0) {
-      buf[0] = '\0';
-    } else {
-      /* No space to write a terminator. */
-    }
+    result = put_minus(buf, size, digits);
   } else {
     result = format_u64(buf, size, (uint64_t)val);
   }
@@ -642,11 +540,31 @@ int format_hex64(char *buf, int size, uint64_t val) {
 }
 
 int format_u32(char *buf, int size, uint32_t val) {
-  return format_u64(buf, size, (uint64_t)val);
+  char tmp[U32_MAX_DIGITS];
+  int len = 0;
+
+  do {
+    uint32_t digit = val % 10U;
+    tmp[len] = (char)('0' + digit);
+    len++;
+    val /= 10U;
+  } while (val != 0U);
+
+  return put_digits(buf, size, tmp, len);
 }
 
 int format_i32(char *buf, int size, int32_t val) {
-  return format_i64(buf, size, (int64_t)val);
+  int result = 0;
+
+  if (val < 0) {
+    /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
+    int digits = (size >= 2) ? format_u32(&buf[1], size - 1, (uint32_t)(-(val + 1)) + 1U) : 0;
+    result = put_minus(buf, size, digits);
+  } else {
+    result = format_u32(buf, size, (uint32_t)val);
+  }
+
+  return result;
 }
 
 int format_hex32(char *buf, int size, uint32_t val) {
@@ -654,11 +572,11 @@ int format_hex32(char *buf, int size, uint32_t val) {
 }
 
 int format_u16(char *buf, int size, uint16_t val) {
-  return format_u64(buf, size, (uint64_t)val);
+  return format_u32(buf, size, (uint32_t)val);
 }
 
 int format_i16(char *buf, int size, int16_t val) {
-  return format_i64(buf, size, (int64_t)val);
+  return format_i32(buf, size, (int32_t)val);
 }
 
 int format_hex16(char *buf, int size, uint16_t val) {
@@ -666,11 +584,11 @@ int format_hex16(char *buf, int size, uint16_t val) {
 }
 
 int format_u8(char *buf, int size, uint8_t val) {
-  return format_u64(buf, size, (uint64_t)val);
+  return format_u32(buf, size, (uint32_t)val);
 }
 
 int format_i8(char *buf, int size, int8_t val) {
-  return format_i64(buf, size, (int64_t)val);
+  return format_i32(buf, size, (int32_t)val);
 }
 
 int format_hex8(char *buf, int size, uint8_t val) {
@@ -741,6 +659,147 @@ static uint8_t hex_value(char c) {
   }
 
   return value;
+}
+
+/**
+ * @brief Read the decimal digits of @p s (at least one, nothing else) as a value up to @p max.
+ *
+ * Overflow is checked against constants, so no division runs: on targets without a hardware
+ * divider (or for 64-bit values on 32-bit targets) a runtime division is a library call per digit.
+ *
+ * @param[in]  s    NUL-terminated input.
+ * @param[in]  max  Largest accepted value.
+ * @param[out] out  Receives the value on success.
+ *
+ * @return @c true on success; @c false for empty input, a non-digit or a value above @p max.
+ */
+static bool parse_dec_u32(const char *s, uint32_t max, uint32_t *out) {
+  uint32_t val = 0U;
+  bool ok = is_dec_digit(*s);
+
+  while (ok && is_dec_digit(*s)) {
+    uint32_t digit = dec_value(*s);
+    ok = (val < (UINT32_MAX / 10U)) || (val == (UINT32_MAX / 10U) && digit <= (UINT32_MAX % 10U));
+    if (ok) {
+      val = (val * 10U) + digit;
+      ok = (val <= max);
+      s++;
+    }
+  }
+
+  ok = (ok && *s == '\0');
+
+  if (ok) {
+    *out = val;
+  }
+
+  return ok;
+}
+
+/** @brief 64-bit form of @c parse_dec_u32, with the same rules. */
+static bool parse_dec_u64(const char *s, uint64_t max, uint64_t *out) {
+  uint64_t val = 0ULL;
+  bool ok = is_dec_digit(*s);
+
+  while (ok && is_dec_digit(*s)) {
+    uint64_t digit = dec_value(*s);
+    ok = (val < (UINT64_MAX / 10ULL)) ||
+         (val == (UINT64_MAX / 10ULL) && digit <= (UINT64_MAX % 10ULL));
+    if (ok) {
+      val = (val * 10ULL) + digit;
+      ok = (val <= max);
+      s++;
+    }
+  }
+
+  ok = (ok && *s == '\0');
+
+  if (ok) {
+    *out = val;
+  }
+
+  return ok;
+}
+
+/**
+ * @brief Read an optionally signed decimal value in [@p min, @p max] in 32-bit arithmetic.
+ *
+ * @param[in]  s    NUL-terminated input: optional '+' or '-', then at least one digit.
+ * @param[in]  min  Smallest accepted value (negative).
+ * @param[in]  max  Largest accepted value.
+ * @param[out] out  Receives the value on success.
+ *
+ * @return @c true on success.
+ */
+static bool parse_dec_i32(const char *s, int32_t min, int32_t max, int32_t *out) {
+  uint32_t mag = 0U;
+  bool neg = (*s == '-');
+  bool ok;
+
+  if (neg || *s == '+') {
+    s++;
+  }
+
+  ok = parse_dec_u32(s, neg ? ((uint32_t)(-(min + 1)) + 1U) : (uint32_t)max, &mag);
+
+  if (ok) {
+    if (!neg) {
+      *out = (int32_t)mag;
+    } else if (mag == 0U) {
+      *out = 0;
+    } else {
+      /* -(mag - 1) - 1 reaches INT32_MIN without negating it. */
+      *out = -(int32_t)(mag - 1U) - 1;
+    }
+  }
+
+  return ok;
+}
+
+/**
+ * @brief Copy digits stored least significant first into @p buf, all or nothing.
+ *
+ * A cut-off number would read as a different value, so nothing is written unless all
+ * digits and the NUL fit; @p buf is still terminated when @p size allows.
+ *
+ * @return Characters written, excluding the NUL (0 if they did not fit).
+ */
+static int put_digits(char *buf, int size, const char *tmp, int len) {
+  int pos = 0;
+
+  if (len < size) {
+    while (len > 0) {
+      len--;
+      buf[pos] = tmp[len];
+      pos++;
+    }
+  }
+  if (size > 0) {
+    buf[pos] = '\0';
+  }
+  return pos;
+}
+
+/**
+ * @brief Put the '-' before a magnitude already formatted at @p buf[1].
+ *
+ * @param[in] digits  Length of that magnitude; 0 when it did not fit, which empties @p buf.
+ *
+ * @return Characters written, excluding the NUL.
+ */
+static int put_minus(char *buf, int size, int digits) {
+  int result = 0;
+
+  if (digits > 0) {
+    buf[0] = '-';
+    result = digits + 1;
+  } else if (size > 0) {
+    buf[0] = '\0';
+  } else {
+    /* No space to write a terminator. */
+  }
+
+  return result;
 }
 
 /**

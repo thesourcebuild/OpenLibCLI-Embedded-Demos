@@ -220,7 +220,7 @@ extern "C" {
 #endif
 
 #ifndef CLI_HISTORY_RESTORE_PREBROWSE_LINE
-/**< restore the pre-browse edit line when history returns to the tip. */
+/**< restore the pre-browse line (or the last edit of a recalled entry) at the tip. */
 #define CLI_HISTORY_RESTORE_PREBROWSE_LINE 1
 #endif
 

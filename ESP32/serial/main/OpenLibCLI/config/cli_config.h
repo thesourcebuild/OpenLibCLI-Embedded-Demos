@@ -83,8 +83,9 @@ extern "C" {
 #endif
 
 #ifndef CLI_HISTORY_RESTORE_PREBROWSE_LINE
-/**< When history browsing returns to the tip, restore the pre-browse edit line:
-       1 = enabled, 0 = clear the line instead. */
+/**< When history browsing returns to the tip, restore the line being typed before browsing
+       started, or the last edit made to a recalled entry while browsing (an edit is not
+       lost by moving on): 1 = enabled, 0 = clear the line instead. */
 #define CLI_HISTORY_RESTORE_PREBROWSE_LINE 1
 #endif
 

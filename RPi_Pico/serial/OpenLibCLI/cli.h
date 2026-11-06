@@ -393,7 +393,8 @@ typedef struct {
  * @brief Command handler callback.
  *
  * @param[in] cli   The CLI session that invoked the command.
- * @param[in] cmd   The full command string as typed (before tokenisation).
+ * @param[in] cmd   Registered name of the command being run (the word as typed, which may be
+ *                  an abbreviation or an alias, is @p argv[0]).
  * @param[in] argc  Number of tokens (@p argv[0] is the leaf command word).
  * @param[in] argv  NULL-terminated token array.
  *
@@ -830,7 +831,8 @@ struct cli_s {
   cli_filter_enum_t filter_type;          /**< Active filter type for the current command. */
   char filter_pattern[CLI_MAX_INPUT_LEN]; /**< Pattern string for grep / exclude
                                              / begin filters. */
-  cli_len_t filter_count;                 /**< Line count accumulated by the @c count filter. */
+  uint32_t filter_count;                  /**< Line count accumulated by the @c count filter
+                                             (32-bit: an int may have only 16). */
   bool filter_begin_found;                /**< True once the begin-pattern has been seen. */
 #endif                                    /* CLI_ENABLE_PIPE_FILTER */
 
@@ -863,6 +865,7 @@ struct cli_s {
 
   bool ansi_supported; /**< Terminal supports ANSI/VT100 escape sequences (default true). */
   bool tx_error;       /**< A transport write failed; the session ends on the next tick. */
+  bool tx_unflushed;   /**< Bytes were written since the last transport flush. */
 
   /* --- arbitrary user payload
    * ------------------------------------------------------ */
@@ -923,7 +926,9 @@ struct cli_s {
  * command tree. Does nothing if @p cli or @p transport is @c NULL.
  *
  * @param[out] cli         Zeroed and initialised session.
- * @param[in]  hostname    Initial hostname string shown in the prompt (@c NULL = "cli").
+ * @param[in]  hostname    Initial hostname string shown in the prompt (@c NULL = "cli"; a
+ *                         name that does not fit in @c CLI_MAX_PROMPT_LEN is not used and
+ *                         "cli" is shown: @c cli_set_hostname() reports that case).
  * @param[in]  transport   Pointer to a filled @c cli_transport_struct_t; contents are
  *                         copied.
  * @param[in]  platform    Optional platform services; pass @c NULL for host OS
@@ -1006,17 +1011,27 @@ OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
  * @brief Set the session hostname string (appears in the prompt).
  *
  * @param[in] cli       Active CLI session.
- * @param[in] hostname  New hostname string (@c NULL clears it).
+ * @param[in] hostname  New hostname string (@c NULL clears it), shorter than
+ *                      @c CLI_MAX_PROMPT_LEN.
+ *
+ * @return @c CLI_OK, or @c CLI_ERR if @p cli is @c NULL or @p hostname does not fit in
+ *         @c CLI_MAX_PROMPT_LEN (the previous hostname is kept; a cut name would show
+ *         another name in the prompt).
  */
-OPENLIBCLI_API void cli_set_hostname(cli_struct_t *cli, const char *hostname);
+OPENLIBCLI_API int8_t cli_set_hostname(cli_struct_t *cli, const char *hostname);
 
 /**
  * @brief Set the MOTD banner text.
  *
  * @param[in] cli     Active CLI session.
- * @param[in] banner  Banner string to emit at session start (@c NULL clears it).
+ * @param[in] banner  Banner string to emit at session start (@c NULL clears it), shorter
+ *                    than @c CLI_MAX_BANNER_LEN.
+ *
+ * @return @c CLI_OK, or @c CLI_ERR if @p cli is @c NULL, @p banner does not fit in
+ *         @c CLI_MAX_BANNER_LEN (the previous banner is kept; a cut banner would end in
+ *         the middle of a line) or @c CLI_ENABLE_BANNER is 0.
  */
-OPENLIBCLI_API void cli_set_banner(cli_struct_t *cli, const char *banner);
+OPENLIBCLI_API int8_t cli_set_banner(cli_struct_t *cli, const char *banner);
 
 /**
  * @brief Set the enable-mode secret (privileged exec password).
@@ -1146,6 +1161,11 @@ OPENLIBCLI_API int8_t cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, cons
  * By default, @c cli_init() installs a host OS monotonic clock when one is
  * available. Bare-metal targets should pass @c cli_platform_struct_t.now_sec to
  * @c cli_init().
+ *
+ * Running periods (idle time, periodic interval, a login lockout) keep the time they have
+ * already run and continue on the new clock. A timed lockout cannot end without a clock:
+ * removing the clock (@p fn = NULL) during one closes the session, as when the lockout
+ * would start without a clock.
  *
  * @param[in] cli  Active CLI session.
  * @param[in] fn   Time source callback.
@@ -1393,7 +1413,11 @@ OPENLIBCLI_API cli_cmd_handle_t cli_add_command(cli_struct_t *cli, cli_cmd_handl
  * cli_add_command call.
  * @param[in] alias_name  New keyword for the alias (no spaces, no @c ?).
  *
- * @return A handle for the alias node, or @c CLI_CMD_INVALID on error.
+ * Sub-commands are not copied, so a command that has any cannot be duplicated (it
+ * would be reachable without them); give it a name with @c cli_cmd_add_alias instead.
+ *
+ * @return A handle for the alias node, or @c CLI_CMD_INVALID on error (also when
+ *         @p original has sub-commands).
  */
 OPENLIBCLI_API cli_cmd_handle_t cli_add_command_duplicate(cli_struct_t *cli,
                                                           cli_cmd_handle_t original,
@@ -1701,9 +1725,9 @@ OPENLIBCLI_API int cli_println_p(cli_struct_t *cli, const char *fmt, ...);
 /**
  * @brief Print an error line that bypasses the active pipe filter.
  *
- * Formats the message with a @c "% " IOS-style prefix and always delivers it
- * to the transport (or @c print_transport_cb), regardless of the current pipe filter
- * state.
+ * Formats the message with a @c "% " IOS-style prefix and always delivers that line
+ * to the transport (or, when set, to @c print_transport_cb), regardless of the current pipe
+ * filter state. The message is limited to @c CLI_MAX_OUTPUT_BUF - 3 characters.
  *
  * When either @c print_cb or @c print_cb_v is set, all internal processing
  * is bypassed and the formatted text (or raw fmt+va_list) is forwarded to
@@ -1713,8 +1737,9 @@ OPENLIBCLI_API int cli_println_p(cli_struct_t *cli, const char *fmt, ...);
  * @param[in] fmt  printf-style format string.
  * @param[in] ...  Format arguments.
  *
- * @return Number of characters written to the output, or a negative value on
- *         encoding error.
+ * @return Number of characters of the error line: the message as @c vsnprintf counts it plus
+ *         the @c "% " prefix and the @c \\r\\n suffix (like @c cli_println), or a negative
+ *         value on encoding error.
  */
 OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...);
 
