@@ -952,8 +952,8 @@ OPENLIBCLI_API void cli_init(cli_struct_t *cli, const char *hostname,
 OPENLIBCLI_API void cli_lib_init(void);
 
 /**
- * @brief Release a CLI session. Zeros the @c cli_struct_t struct; command pool
- * memory is untouched.
+ * @brief Release a CLI session. Zeros the @c cli_struct_t struct and leaves it in
+ * @c CLI_SESSION_STOP; command pool memory is untouched.
  *
  * @param[in] cli  Session to release; may be @c NULL (no-op).
  */
@@ -1085,8 +1085,8 @@ OPENLIBCLI_API void cli_set_quit_cb(cli_struct_t *cli, cli_session_cmd_fn fn);
  * @brief Set behaviour for @c exit when invoked at the root / login mode.
  *
  * @param[in] cli     Active CLI session.
- * @param[in] policy  One of the @c cli_exit_root_policy_t values
- *                    (e.g. do nothing, drop to unprivileged, or end session).
+ * @param[in] policy  One of the @c cli_exit_root_policy_enum_t values: end the session
+ *                    (default), restart it (banner / login), or ignore the command.
  */
 OPENLIBCLI_API void cli_set_exit_root_policy(cli_struct_t *cli, cli_exit_root_policy_enum_t policy);
 
@@ -1094,8 +1094,8 @@ OPENLIBCLI_API void cli_set_exit_root_policy(cli_struct_t *cli, cli_exit_root_po
  * @brief Set behaviour for the @c quit command.
  *
  * @param[in] cli     Active CLI session.
- * @param[in] policy  One of the @c cli_quit_policy_t values
- *                    (e.g. always end session or pop context first).
+ * @param[in] policy  One of the @c cli_quit_policy_enum_t values: end the session
+ *                    (default), restart it (banner / login), or ignore the command.
  */
 OPENLIBCLI_API void cli_set_quit_policy(cli_struct_t *cli, cli_quit_policy_enum_t policy);
 
@@ -1179,7 +1179,8 @@ OPENLIBCLI_API void cli_set_time_source(cli_struct_t *cli, cli_time_fn fn, void 
  * profiling.
  *
  * Once set, every tick call updates the stats accessible via @c
- * cli_tick_stats_get(). Pass @c NULL to disable timing.
+ * cli_tick_stats_get(). Pass @c NULL to disable timing. A tick during which the source is
+ * set, replaced or removed (e.g. by a command) is not measured.
  *
  * @param[in] cli  Active CLI session.
  * @param[in] fn   Microsecond time source, or @c NULL to disable.
@@ -1829,14 +1830,18 @@ OPENLIBCLI_API int cli_vsnprintf(char *buf, size_t size, const char *fmt, va_lis
  * @brief Parse an integer or float from a string using a format specifier.
  *
  * @param[in] str   The input string to parse.
- * @param[in] fmt   The format specifier (e.g., "%u", "%d", "%f", "%x").
+ * @param[in] fmt   The format specifier, one conversion (e.g., "%u", "%d", "%f", "%x").
  * @param[out] out  Pointer to the target variable.
  *
- * @return @c CLI_OK (1) on success, or 0 on failure.
+ * @return 1 when the value was parsed and stored in @p out, 0 otherwise (no match, an empty
+ *         string, or a @c NULL argument). Not a @c CLI_* code: @c CLI_OK is 0.
  */
 OPENLIBCLI_API int cli_sscanf(const char *str, const char *fmt, void *out);
 
 /* Built-in Command Handlers ------------------------------------------------------------*/
+
+/* The cli_cmd_builtin_*() handlers below can also be called directly (e.g. from an
+ * application's own command); each returns CLI_ERR when cli is NULL. */
 
 /**
  * @brief Register all built-in commands into a CLI instance.

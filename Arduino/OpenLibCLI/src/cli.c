@@ -533,41 +533,44 @@ OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli) {
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_exit(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                            const char *argv[]) {
-  int8_t rc = CLI_OK;
+  int8_t rc = CLI_ERR; /* no session to act on */
 
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  if (cli->on_exit_cmd != NULL) {
-    int8_t hook_rc = cli->on_exit_cmd(cli);
-    if (hook_rc != CLI_OK) {
-      rc = hook_rc;
+  if (cli != NULL) {
+    rc = CLI_OK;
+    if (cli->on_exit_cmd != NULL) {
+      int8_t hook_rc = cli->on_exit_cmd(cli);
+      if (hook_rc != CLI_OK) {
+        rc = hook_rc;
+      }
     }
-  }
 
-  if (rc != CLI_OK) {
-    /* Hook result takes precedence. */
-  } else if (cli->nav_depth > 0U) {
-    /* Leave one navigation level (submenu and/or mode, and the privilege it granted). */
-    cli_nav_return(cli, (uint8_t)(cli->nav_depth - 1U));
-  } else {
-    /* Login floor: nothing left to leave. */
-    switch (cli->exit_root_policy) {
-    case CLI_EXIT_ROOT_POLICY_RESET_SESSION:
-      cli_restart_session(cli);
-      rc = CLI_OK;
-      break;
+    if (rc != CLI_OK) {
+      /* Hook result takes precedence. */
+    } else if (cli->nav_depth > 0U) {
+      /* Leave one navigation level (submenu and/or mode, and the privilege it granted). */
+      cli_nav_return(cli, (uint8_t)(cli->nav_depth - 1U));
+    } else {
+      /* Login floor: nothing left to leave. */
+      switch (cli->exit_root_policy) {
+      case CLI_EXIT_ROOT_POLICY_RESET_SESSION:
+        cli_restart_session(cli);
+        rc = CLI_OK;
+        break;
 
-    case CLI_EXIT_ROOT_POLICY_IGNORE:
-      rc = CLI_OK;
-      break;
+      case CLI_EXIT_ROOT_POLICY_IGNORE:
+        rc = CLI_OK;
+        break;
 
-    case CLI_EXIT_ROOT_POLICY_CLOSE_SESSION:
-    default:
-      cli->session_state = CLI_SESSION_STOP;
-      rc = CLI_ERR_QUIT;
-      break;
+      case CLI_EXIT_ROOT_POLICY_CLOSE_SESSION:
+      default:
+        cli->session_state = CLI_SESSION_STOP;
+        rc = CLI_ERR_QUIT;
+        break;
+      }
     }
   }
 
@@ -576,37 +579,40 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_exit(cli_struct_t *cli, const char *cmd, c
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_quit(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                            const char *argv[]) {
-  int8_t rc = CLI_OK;
+  int8_t rc = CLI_ERR; /* no session to act on */
 
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  if (cli->on_quit_cmd != NULL) {
-    int8_t hook_rc = cli->on_quit_cmd(cli);
-    if (hook_rc != CLI_OK) {
-      rc = hook_rc;
+  if (cli != NULL) {
+    rc = CLI_OK;
+    if (cli->on_quit_cmd != NULL) {
+      int8_t hook_rc = cli->on_quit_cmd(cli);
+      if (hook_rc != CLI_OK) {
+        rc = hook_rc;
+      }
     }
-  }
 
-  if (rc != CLI_OK) {
-    /* Hook result takes precedence. */
-  } else {
-    switch (cli->quit_policy) {
-    case CLI_QUIT_POLICY_RESET_SESSION:
-      cli_restart_session(cli);
-      rc = CLI_OK;
-      break;
+    if (rc != CLI_OK) {
+      /* Hook result takes precedence. */
+    } else {
+      switch (cli->quit_policy) {
+      case CLI_QUIT_POLICY_RESET_SESSION:
+        cli_restart_session(cli);
+        rc = CLI_OK;
+        break;
 
-    case CLI_QUIT_POLICY_IGNORE:
-      rc = CLI_OK;
-      break;
+      case CLI_QUIT_POLICY_IGNORE:
+        rc = CLI_OK;
+        break;
 
-    case CLI_QUIT_POLICY_CLOSE_SESSION:
-    default:
-      cli->session_state = CLI_SESSION_STOP;
-      rc = CLI_ERR_QUIT;
-      break;
+      case CLI_QUIT_POLICY_CLOSE_SESSION:
+      default:
+        cli->session_state = CLI_SESSION_STOP;
+        rc = CLI_ERR_QUIT;
+        break;
+      }
     }
   }
 
@@ -615,99 +621,122 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_quit(cli_struct_t *cli, const char *cmd, c
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                              const char *argv[]) {
-  int8_t rc = CLI_OK;
+  int8_t rc = CLI_ERR; /* no session to act on */
 
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  /* Already privileged or no secret/callback configured: switch mode immediately. The mode
-   * is entered before privilege is raised so the saved navigation level is the unprivileged
-   * one that a later 'exit' returns to. */
+  if (cli != NULL) {
+    /* Already privileged or no secret/callback configured: switch mode immediately. The
+     * mode is entered before privilege is raised so the saved navigation level is the
+     * unprivileged one that a later 'exit' returns to. */
 #if CLI_ENABLE_AUTH
-  bool needs_secret =
-      (cli->enable_privilege_secret[0] != '\0' || cli->enable_privilege_cb != NULL);
+    bool needs_secret =
+        (cli->enable_privilege_secret[0] != '\0' || cli->enable_privilege_cb != NULL);
 #else
-  bool needs_secret = False;
+    bool needs_secret = False;
 #endif
 
-  if (cli_state_is_auth_input(cli)) {
-    /* Run programmatically while credentials are being asked for (login, a pending enable
-     * password, a lockout): the user is not at the command prompt, nothing to enable. */
-    rc = CLI_ERR;
-  } else if (cli->privilege >= CLI_PRIV_PRIVILEGED || !needs_secret) {
-    rc = cli_set_mode(cli, CLI_MODE_ENABLE);
-    if (rc == CLI_OK) {
-      if (cli->privilege < CLI_PRIV_PRIVILEGED) {
-        cli_set_privilege(cli, CLI_PRIV_PRIVILEGED); /* raised to it, never lowered */
+    rc = CLI_OK;
+    if (cli_state_is_auth_input(cli)) {
+      /* Run programmatically while credentials are being asked for (login, a pending enable
+       * password, a lockout): the user is not at the command prompt, nothing to enable. */
+      rc = CLI_ERR;
+    } else if (cli->privilege >= CLI_PRIV_PRIVILEGED || !needs_secret) {
+      rc = cli_set_mode(cli, CLI_MODE_ENABLE);
+      if (rc == CLI_OK) {
+        if (cli->privilege < CLI_PRIV_PRIVILEGED) {
+          cli_set_privilege(cli, CLI_PRIV_PRIVILEGED); /* raised to it, never lowered */
+        }
+      } else {
+        CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
       }
-    } else {
-      CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
     }
-  }
 #if CLI_ENABLE_AUTH
-  /* Secret required — the session engine routes the next line to the password handler */
-  else {
-    cli->auth_resume_state = cli->auth_state;
-    cli_reset_input(cli);
-    cli->auth_state = CLI_AUTH_ENABLE_MODE_PASSWORD;
-    cli_input_prompt_changed(cli);
-  }
+    /* Secret required — the session engine routes the next line to the password handler */
+    else {
+      cli->auth_resume_state = cli->auth_state;
+      cli_reset_input(cli);
+      cli->auth_state = CLI_AUTH_ENABLE_MODE_PASSWORD;
+      cli_input_prompt_changed(cli);
+    }
 #endif
+  }
 
   return rc;
 }
 
-int8_t cli_cmd_builtin_disable(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
-                               const char *argv[]) {
+OPENLIBCLI_API int8_t cli_cmd_builtin_disable(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
+                                              const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  int8_t rc = CLI_OK;
+  if (cli != NULL) {
+    /* User exec becomes the new floor: a following 'exit' ends the session. */
+    cli_nav_reset(cli);
+    cli_set_privilege(cli, CLI_PRIV_USER);
+    rc = CLI_OK;
+  }
 
-  /* User exec becomes the new floor: a following 'exit' ends the session. */
-  cli_nav_reset(cli);
-  cli_set_privilege(cli, CLI_PRIV_USER);
   return rc;
 }
 
-int8_t cli_cmd_builtin_end(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
-                           const char *argv[]) {
+OPENLIBCLI_API int8_t cli_cmd_builtin_end(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
+                                          const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  /* Return to privileged exec from any config mode / submenu entered from it */
-  return cli_set_mode(cli, CLI_MODE_ENABLE);
+  if (cli != NULL) {
+    /* Return to privileged exec from any config mode / submenu entered from it */
+    rc = cli_set_mode(cli, CLI_MODE_ENABLE);
+  }
+
+  return rc;
 }
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_configure(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                                 const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  int8_t rc = cli_set_mode(cli, CLI_MODE_CONFIG);
-  if (rc != CLI_OK) {
-    CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+  if (cli != NULL) {
+    rc = cli_set_mode(cli, CLI_MODE_CONFIG);
+    if (rc != CLI_OK) {
+      CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+    }
   }
+
   return rc;
 }
 
 #if CLI_ENABLE_HISTORY
 OPENLIBCLI_API int8_t cli_cmd_builtin_history(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                               const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
 #if !CLI_HISTORY_INDEX_SELECTION
   (void)argv;
   (void)argc;
 #endif
-  int8_t rc = CLI_OK;
 
-  if (cli->history_count == 0) {
+  if (cli == NULL) {
+    /* Nothing to list. */
+  } else if (cli->history_count == 0) {
     CLI_PRINTLN_STR(cli, "History is empty.");
+    rc = CLI_OK;
   } else {
+    rc = CLI_OK;
 #if CLI_HISTORY_INDEX_SELECTION
     uint32_t n_val = 0U;
 
@@ -749,41 +778,42 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_history(cli_struct_t *cli, const char *cmd
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                            const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
 
-  int8_t rc = CLI_OK;
+  if (cli != NULL) {
+    cli_cmd_handle_t parent = cli_menu_context_parent(cli);
+    /* Without arguments inside a submenu, the root commands that still run there are listed
+     * after the submenu's own commands. */
+    bool with_root = (argc <= 1 && parent != CLI_CMD_ROOT);
 
-  cli_cmd_handle_t parent = cli_menu_context_parent(cli);
-  /* Without arguments inside a submenu, the root commands that still run there are listed
-   * after the submenu's own commands. */
-  bool with_root = (argc <= 1 && parent != CLI_CMD_ROOT);
-
-  if (argc > 1) {
-    cli_cmd_handle_t h;
-    for (cli_argc_t i = 1; i < argc; i++) {
-      if (i == 1) {
-        parent = cli_first_word_parent(cli, argv[1]); /* same lookup as execution */
-      }
-      int8_t r = cli_resolve_one(cli, argv[i], parent, &h);
-      if (r != CLI_OK) {
-        if (r == CLI_ERR) {
+    rc = CLI_OK;
+    if (argc > 1) {
+      cli_cmd_handle_t h;
+      for (cli_argc_t i = 1; i < argc && rc == CLI_OK; i++) {
+        if (i == 1) {
+          parent = cli_first_word_parent(cli, argv[1]); /* same lookup as execution */
+        }
+        int8_t r = cli_resolve_one(cli, argv[i], parent, &h);
+        if (r == CLI_OK) {
+          parent = h;
+        } else if (r == CLI_ERR) {
           CLI_WSTR(cli, "% Unknown command.\r\n");
           rc = CLI_ERR;
         } else {
           CLI_WSTR(cli, "% Ambiguous command.\r\n");
           rc = CLI_ERR_AMBIG;
         }
-        break;
       }
-      parent = h;
     }
-  }
 
-  if (rc == CLI_OK) {
-    cli_help_ctx_struct_t ctx = {False, True};
-    cli_foreach_match(cli, "", parent, with_root, cli_print_help_cb, &ctx);
-    if (!ctx.any) {
-      CLI_PRINTLN_STR(cli, "  <cr>");
+    if (rc == CLI_OK) {
+      cli_help_ctx_struct_t ctx = {False, True};
+      cli_foreach_match(cli, "", parent, with_root, cli_print_help_cb, &ctx);
+      if (!ctx.any) {
+        CLI_PRINTLN_STR(cli, "  <cr>");
+      }
     }
   }
 
@@ -792,19 +822,22 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_clear_screen(cli_struct_t *cli, const char *cmd,
                                                    cli_argc_t argc, const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  int8_t rc = CLI_OK;
-
-  /* ANSI clear screen + cursor home */
-  if (cli->ansi_supported) {
-    CLI_WSTR(cli, "\x1b"
-                  "[2J\x1b"
-                  "[H");
-  } else {
-    CLI_PRINTLN_STR(cli, "Clear not supported on Non-ANSI/VT100 Terminals");
+  if (cli != NULL) {
+    /* ANSI clear screen + cursor home */
+    if (cli->ansi_supported) {
+      CLI_WSTR(cli, "\x1b"
+                    "[2J\x1b"
+                    "[H");
+    } else {
+      CLI_PRINTLN_STR(cli, "Clear not supported on Non-ANSI/VT100 Terminals");
+    }
+    rc = CLI_OK;
   }
 
   return rc;
@@ -812,61 +845,74 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_clear_screen(cli_struct_t *cli, const char
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_usage(cli_struct_t *cli, const char *cmd, cli_argc_t argc,
                                             const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  CLI_PRINTLN_STR(cli, "Usage information. Type 'commands' or 'keys' for details.");
-  return CLI_OK;
+  if (cli != NULL) {
+    CLI_PRINTLN_STR(cli, "Usage information. Type 'commands' or 'keys' for details.");
+    rc = CLI_OK;
+  }
+
+  return rc;
 }
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_usage_commands(cli_struct_t *cli, const char *cmd,
                                                      cli_argc_t argc, const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+  cli_cmd_handle_t h_clear;
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  int8_t rc = CLI_OK;
-  cli_cmd_handle_t h_clear;
-
-  CLI_PRINTLN_STR(cli, "Common usage:");
-  CLI_PRINTLN_STR(cli, "  ?                 List commands available here");
-  CLI_PRINTLN_STR(cli, "  <cmd> ?           List what can follow <cmd>");
-  CLI_PRINTLN_STR(cli, "  <prefix>?         List commands starting with <prefix>");
-  CLI_PRINTLN_STR(cli, "  help [<cmd> ...]  List commands (or the subcommands of <cmd>)");
+  if (cli != NULL) {
+    CLI_PRINTLN_STR(cli, "Common usage:");
+    CLI_PRINTLN_STR(cli, "  ?                 List commands available here");
+    CLI_PRINTLN_STR(cli, "  <cmd> ?           List what can follow <cmd>");
+    CLI_PRINTLN_STR(cli, "  <prefix>?         List commands starting with <prefix>");
+    CLI_PRINTLN_STR(cli, "  help [<cmd> ...]  List commands (or the subcommands of <cmd>)");
 #if CLI_ENABLE_HISTORY
-  CLI_PRINTLN_STR(cli, "  history           Command history");
+    CLI_PRINTLN_STR(cli, "  history           Command history");
 #endif
-  /* Only advertise 'clear' when it is actually registered (it needs an ANSI terminal). */
-  if (cli_resolve_one(cli, "clear", CLI_CMD_ROOT, &h_clear) == CLI_OK &&
-      cli_cmd_exact(&cli->cmd_pool[h_clear], "clear")) {
-    if (cli_cmd_exact(&cli->cmd_pool[h_clear], "cls")) {
-      CLI_PRINTLN_STR(cli, "  clear / cls       Clear screen");
-    } else {
-      CLI_PRINTLN_STR(cli, "  clear             Clear screen");
+    /* Only advertise 'clear' when it is actually registered (it needs an ANSI terminal). */
+    if (cli_resolve_one(cli, "clear", CLI_CMD_ROOT, &h_clear) == CLI_OK &&
+        cli_cmd_exact(&cli->cmd_pool[h_clear], "clear")) {
+      if (cli_cmd_exact(&cli->cmd_pool[h_clear], "cls")) {
+        CLI_PRINTLN_STR(cli, "  clear / cls       Clear screen");
+      } else {
+        CLI_PRINTLN_STR(cli, "  clear             Clear screen");
+      }
     }
+    CLI_PRINTLN_STR(cli, "  usage keys        Key shortcuts");
+    rc = CLI_OK;
   }
-  CLI_PRINTLN_STR(cli, "  usage keys        Key shortcuts");
 
   return rc;
 }
 
 OPENLIBCLI_API int8_t cli_cmd_builtin_usage_keys(cli_struct_t *cli, const char *cmd,
                                                  cli_argc_t argc, const char *argv[]) {
+  int8_t rc = CLI_ERR; /* no session to act on */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-  int8_t rc = CLI_OK;
+  if (cli != NULL) {
+    CLI_PRINTLN_STR(cli, "Line editing shortcuts:");
+    CLI_PRINTLN_STR(cli, "  Tab      autocomplete");
+    CLI_PRINTLN_STR(cli, "  Ctrl-P/N history prev/next");
+    CLI_PRINTLN_STR(cli, "  Ctrl-A/E line start/end");
+    CLI_PRINTLN_STR(cli, "  Ctrl-B/F cursor left/right");
+    CLI_PRINTLN_STR(cli, "  Ctrl-U   clear line");
+    CLI_PRINTLN_STR(cli, "  Ctrl-W   delete prev word");
+    CLI_PRINTLN_STR(cli, "  Ctrl-K   delete to EOL");
+    rc = CLI_OK;
+  }
 
-  CLI_PRINTLN_STR(cli, "Line editing shortcuts:");
-  CLI_PRINTLN_STR(cli, "  Tab      autocomplete");
-  CLI_PRINTLN_STR(cli, "  Ctrl-P/N history prev/next");
-  CLI_PRINTLN_STR(cli, "  Ctrl-A/E line start/end");
-  CLI_PRINTLN_STR(cli, "  Ctrl-B/F cursor left/right");
-  CLI_PRINTLN_STR(cli, "  Ctrl-U   clear line");
-  CLI_PRINTLN_STR(cli, "  Ctrl-W   delete prev word");
-  CLI_PRINTLN_STR(cli, "  Ctrl-K   delete to EOL");
   return rc;
 }
 
@@ -906,7 +952,11 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
   }
 
 #if CLI_ENABLE_TIMMING_STATS
-  uint32_t t0 = cli->micros_source ? cli->micros_source(cli->micros_source_ctx) : 0U;
+  /* The tick is timed with the clock it starts with: a clock installed, replaced or removed
+   * during the tick (by a command or callback) has no start reading to subtract from. */
+  cli_micros_fn tick_clock = cli->micros_source;
+  void *tick_clock_ctx = cli->micros_source_ctx;
+  uint32_t t0 = (tick_clock != NULL) ? tick_clock(tick_clock_ctx) : 0U;
 #endif
   int8_t result = CLI_OK;
   bool active = True;
@@ -1072,8 +1122,9 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
   cli_flush(cli);
 
 #if CLI_ENABLE_TIMMING_STATS
-  if (cli->micros_source != NULL) {
-    uint32_t elapsed = cli->micros_source(cli->micros_source_ctx) - t0;
+  if (tick_clock != NULL && cli->micros_source == tick_clock &&
+      cli->micros_source_ctx == tick_clock_ctx) {
+    uint32_t elapsed = tick_clock(tick_clock_ctx) - t0;
     cli_tick_stats_struct_t *s = &cli->tick_stats;
     /* Saturate rather than wrap: a wrapped count would divide by zero below. */
     if (s->count < UINT32_MAX) {
@@ -1131,89 +1182,87 @@ OPENLIBCLI_API void cli_init(cli_struct_t *cli, const char *hostname,
                              const cli_transport_struct_t *transport,
                              const cli_platform_struct_t *platform, cli_cmd_struct_t *cmd_pool,
                              cli_poolsize_t cmd_pool_size) {
-  if (cli == NULL || transport == NULL) {
-    return;
-  }
-
-  (void)memset(cli, 0, sizeof(*cli));
-  if (cmd_pool == NULL || cmd_pool_size < 0) {
-    cmd_pool_size = 0;
-  }
-  /* The session owns the pool: start from an empty command tree so slots left over
-   * from a previous session using the same pool are not resurrected. */
-  if (cmd_pool_size > 0) {
-    (void)memset(cmd_pool, 0, (size_t)cmd_pool_size * sizeof(*cmd_pool));
-  }
-  cli->context = CLI_CMD_ROOT;
-  cli->nav_depth = 0U;
-  cli->cmd_pool = cmd_pool;
-  cli->cmd_pool_size = cmd_pool_size;
-  cli->cmd_pool_count = 0;
-  cli->session_state = CLI_SESSION_STOP;
-  cli->mode = CLI_MODE_EXEC;
-  cli->privilege = CLI_PRIV_USER;
-  cli->ansi_supported = True;
-  cli->transport = *transport;
+  if (cli != NULL && transport != NULL) {
+    (void)memset(cli, 0, sizeof(*cli));
+    if (cmd_pool == NULL || cmd_pool_size < 0) {
+      cmd_pool_size = 0;
+    }
+    /* The session owns the pool: start from an empty command tree so slots left over
+     * from a previous session using the same pool are not resurrected. */
+    if (cmd_pool_size > 0) {
+      (void)memset(cmd_pool, 0, (size_t)cmd_pool_size * sizeof(*cmd_pool));
+    }
+    cli->context = CLI_CMD_ROOT;
+    cli->nav_depth = 0U;
+    cli->cmd_pool = cmd_pool;
+    cli->cmd_pool_size = cmd_pool_size;
+    cli->cmd_pool_count = 0;
+    cli->session_state = CLI_SESSION_STOP;
+    cli->mode = CLI_MODE_EXEC;
+    cli->privilege = CLI_PRIV_USER;
+    cli->ansi_supported = True;
+    cli->transport = *transport;
 #if CLI_ENABLE_TIME_SOURCE
-  if (platform && platform->now_sec) {
-    cli->time_source = platform->now_sec;
-    cli->time_source_ctx = platform->now_sec_ctx;
+    if (platform && platform->now_sec) {
+      cli->time_source = platform->now_sec;
+      cli->time_source_ctx = platform->now_sec_ctx;
 #if ENV_IS_OS_ENVIRONMENT
-  } else {
-    cli->time_source = cli_default_time_source;
-    cli->time_source_ctx = NULL;
+    } else {
+      cli->time_source = cli_default_time_source;
+      cli->time_source_ctx = NULL;
 #else
-  } else {
-    cli->time_source = NULL;
-    cli->time_source_ctx = NULL;
+    } else {
+      cli->time_source = NULL;
+      cli->time_source_ctx = NULL;
 #endif
-  }
+    }
 #else
-  (void)platform;
+    (void)platform;
 #endif
 #if CLI_ENABLE_TIMMING_STATS
-  if (platform && platform->micros) {
-    cli->micros_source = platform->micros;
-    cli->micros_source_ctx = platform->micros_ctx;
-  }
+    if (platform && platform->micros) {
+      cli->micros_source = platform->micros;
+      cli->micros_source_ctx = platform->micros_ctx;
+    }
 #endif
 #if CLI_ENABLE_IDLE_TIMEOUT
-  cli->idle_timeout = (cli_time_t)CLI_DEFAULT_IDLE_TIMEOUT_SEC;
-  cli->idle_timeout_policy = CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION;
+    cli->idle_timeout = (cli_time_t)CLI_DEFAULT_IDLE_TIMEOUT_SEC;
+    cli->idle_timeout_policy = CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION;
 #endif
-  cli->exit_root_policy = CLI_EXIT_ROOT_POLICY_CLOSE_SESSION;
-  cli->quit_policy = CLI_QUIT_POLICY_CLOSE_SESSION;
+    cli->exit_root_policy = CLI_EXIT_ROOT_POLICY_CLOSE_SESSION;
+    cli->quit_policy = CLI_QUIT_POLICY_CLOSE_SESSION;
 #if CLI_ENABLE_PERIODIC_CALLBACK
-  cli->periodic_interval = 1UL;
+    cli->periodic_interval = 1UL;
 #endif
 #if CLI_ENABLE_AUTH
-  cli->auth_attempts = 0;
-  cli->auth_failure_mode = CLI_AUTH_FAILURE_MODE_CLOSE;
-  cli->auth_lockout_seconds = 30UL;
-  cli->auth_lockout_started_ts = 0UL;
-  cli->auth_username[0] = '\0';
+    cli->auth_attempts = 0;
+    cli->auth_failure_mode = CLI_AUTH_FAILURE_MODE_CLOSE;
+    cli->auth_lockout_seconds = 30UL;
+    cli->auth_lockout_started_ts = 0UL;
+    cli->auth_username[0] = '\0';
 #endif
 
-  /* "cli" stays when no hostname is given or it does not fit (see cli_set_hostname). */
-  (void)cli_strlcpy(cli->hostname, "cli", CLI_MAX_PROMPT_LEN);
-  if (hostname != NULL) {
-    (void)cli_set_hostname(cli, hostname);
-  }
+    /* "cli" stays when no hostname is given or it does not fit (see cli_set_hostname). */
+    (void)cli_strlcpy(cli->hostname, "cli", CLI_MAX_PROMPT_LEN);
+    if (hostname != NULL) {
+      (void)cli_set_hostname(cli, hostname);
+    }
 #if CLI_ENABLE_HISTORY && CLI_HISTORY_INDEX_SELECTION
-  cli->history_replay = (cli_history_idx_t)-1;
+    cli->history_replay = (cli_history_idx_t)-1;
 #endif
 
 #if CLI_ENABLE_MODE_NAMES
-  (void)cli_set_mode_name(cli, CLI_MODE_CONFIG, "config");
+    (void)cli_set_mode_name(cli, CLI_MODE_CONFIG, "config");
 #endif
-  cli_idle_period_restart(cli);
+    cli_idle_period_restart(cli);
 #if CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_IDLE_TIMEOUT
-  cli->last_periodic_ts = cli->last_action_ts;
+    cli->last_periodic_ts = cli->last_action_ts;
 #elif CLI_ENABLE_PERIODIC_CALLBACK && CLI_ENABLE_TIME_SOURCE
-  if (cli->time_source != NULL) {
-    cli->last_periodic_ts = cli->time_source(cli->time_source_ctx);
-  }
+    if (cli->time_source != NULL) {
+      cli->last_periodic_ts = cli->time_source(cli->time_source_ctx);
+    }
 #endif
+  }
 }
 
 OPENLIBCLI_API void cli_done(cli_struct_t *cli) {
@@ -1229,8 +1278,9 @@ OPENLIBCLI_API void cli_done(cli_struct_t *cli) {
     }
 #endif
     cli_flush(cli);
-    cli->session_state = CLI_SESSION_STOP;
     (void)memset(cli, 0, sizeof(*cli));
+    /* Zeroed state is CLI_SESSION_INIT: a released session must read as stopped. */
+    cli->session_state = CLI_SESSION_STOP;
   }
 }
 
@@ -2264,8 +2314,9 @@ OPENLIBCLI_API int cli_sscanf(const char *str, const char *fmt, void *out) {
   int result = 0;
 
   if (str != NULL && fmt != NULL && out != NULL) {
+    /* 1 when the value was stored; no match (0) and an empty string (EOF) are failures. */
     //-V::2600
-    result = sscanf(str, fmt, out);
+    result = (sscanf(str, fmt, out) == 1) ? 1 : 0;
   }
 
   return result;
@@ -3234,16 +3285,14 @@ static void cli_show_prompt(cli_struct_t *cli) {
  * entry are silently dropped.
  *
  * @param[in] cli   Active CLI session.
- * @param[in] line  NUL-terminated command string to store.
+ * @param[in] line  Non-empty command line, shorter than @c CLI_MAX_INPUT_LEN: an input line,
+ *                  so it fits (@c CLI_HISTORY_BUF_SIZE >= @c CLI_MAX_INPUT_LEN is checked at
+ *                  compile time).
  */
 static void cli_history_add(cli_struct_t *cli, const char *line) {
-  bool add = (cli != NULL && line != NULL && line[0] != '\0');
+  bool add = True;
 
-  if (add && strlen(line) + 1U > (size_t)CLI_HISTORY_BUF_SIZE) {
-    add = False; /* Cannot be stored (guarded by the config check for interactive input). */
-  }
-
-  if (add && cli->history_count > 0) {
+  if (cli->history_count > 0) {
     cli_history_idx_t prev =
         (cli_history_idx_t)((cli->history_head + CLI_MAX_HISTORY - 1) % CLI_MAX_HISTORY);
     if (strcmp(line, &cli->history_buf[cli->history_off[prev]]) == 0) {
@@ -3965,22 +4014,13 @@ static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_
  * @c CLI_CMD_ROOT. Modes only filter which commands are visible; they never
  * change where matching starts.
  *
- * @param[in] cli  Active CLI session.
+ * @param[in] cli  Active CLI session (not @c NULL).
  * @return Effective parent handle for the current menu context.
  */
 static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli) {
-  cli_cmd_handle_t ret = CLI_CMD_ROOT;
+  cli_cmd_handle_t cur = cli_context_current(cli);
 
-  if (cli == NULL) {
-    ret = CLI_CMD_INVALID;
-  } else {
-    cli_cmd_handle_t cur = cli_context_current(cli);
-    if (cur != CLI_CMD_INVALID) {
-      ret = cur;
-    }
-  }
-
-  return ret;
+  return (cur != CLI_CMD_INVALID) ? cur : CLI_CMD_ROOT;
 }
 
 /* Tab Completion -----------------------------------------------------------------------*/
@@ -4612,7 +4652,8 @@ static void cli_filter_tab_complete(cli_struct_t *cli, char *tail) {
  * resets the filter state beforehand.
  *
  * @param[in]     cli   Active CLI session (filter state updated in-place).
- * @param[in,out] line  Mutable command line string (modified by NUL insertion).
+ * @param[in,out] line  Mutable command line string without trailing blanks (modified by
+ *                      NUL insertion).
  *
  * @return @c CLI_OK (with or without a filter), or @c CLI_ERR on an invalid filter.
  */
@@ -4631,12 +4672,7 @@ static int8_t cli_parse_filter(cli_struct_t *cli, char *line) {
     *kw_end = '\0';
 
     cli_filter_enum_t type = cli_filter_lookup(kw, &ambiguous);
-
-    /* Trim trailing spaces of the pattern. */
-    cli_len_t plen = (cli_len_t)strlen(pattern);
-    while (plen > 0 && (pattern[plen - 1] == ' ' || pattern[plen - 1] == '\t')) {
-      pattern[--plen] = '\0';
-    }
+    cli_len_t plen = (cli_len_t)strlen(pattern); /* no trailing blanks: the line is trimmed */
 
     if (type == CLI_FILTER_NONE || ambiguous) {
       CLI_WSTR(cli, "% Invalid filter: ");
