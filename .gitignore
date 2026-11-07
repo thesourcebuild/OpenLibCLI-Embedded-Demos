@@ -37,6 +37,7 @@ OpenLibCLI.uvguix.PC
 # ---- STM32CubeIDE / Eclipse -------------------------------------------------
 STM32/.metadata/
 *.prefs
+STM32/serial/Debug
 
 # ---- ESP-IDF (ESP32) --------------------------------------------------------
 **/ESP32/*/build/
