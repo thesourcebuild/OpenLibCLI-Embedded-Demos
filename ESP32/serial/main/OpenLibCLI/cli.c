@@ -941,205 +941,205 @@ OPENLIBCLI_API void cli_start(cli_struct_t *cli) {
 }
 
 OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
+  int8_t result = CLI_ERR; /* no session to act on */
+
   if (cli == NULL) {
-    return CLI_ERR;
-  }
-  if (cli->transport.available == NULL || cli->transport.read == NULL ||
-      cli->transport.write == NULL) {
+    /* Nothing to serve. */
+  } else if (cli->transport.available == NULL || cli->transport.read == NULL ||
+             cli->transport.write == NULL) {
     /* Incomplete transport vtable (e.g. a failed transport init): nothing can be served. */
     cli->session_state = CLI_SESSION_STOP;
-    return CLI_ERR;
-  }
-
+  } else {
 #if CLI_ENABLE_TIMMING_STATS
-  /* The tick is timed with the clock it starts with: a clock installed, replaced or removed
-   * during the tick (by a command or callback) has no start reading to subtract from. */
-  cli_micros_fn tick_clock = cli->micros_source;
-  void *tick_clock_ctx = cli->micros_source_ctx;
-  uint32_t t0 = (tick_clock != NULL) ? tick_clock(tick_clock_ctx) : 0U;
+    /* The tick is timed with the clock it starts with: a clock installed, replaced or removed
+     * during the tick (by a command or callback) has no start reading to subtract from. */
+    cli_micros_fn tick_clock = cli->micros_source;
+    void *tick_clock_ctx = cli->micros_source_ctx;
+    uint32_t t0 = (tick_clock != NULL) ? tick_clock(tick_clock_ctx) : 0U;
 #endif
-  int8_t result = CLI_OK;
-  bool active = True;
+    result = CLI_OK;
+    bool active = True;
 
-  if (cli->session_state == CLI_SESSION_STOP) {
-    result = CLI_ERR_QUIT;
-    active = False;
-  } else if (cli->session_state == CLI_SESSION_INIT) {
-    cli->session_state = CLI_SESSION_SHOW_BANNER;
-  } else if (cli->session_state == CLI_SESSION_SHOW_BANNER) {
+    if (cli->session_state == CLI_SESSION_STOP) {
+      result = CLI_ERR_QUIT;
+      active = False;
+    } else if (cli->session_state == CLI_SESSION_INIT) {
+      cli->session_state = CLI_SESSION_SHOW_BANNER;
+    } else if (cli->session_state == CLI_SESSION_SHOW_BANNER) {
 #if CLI_ENABLE_BANNER
-    if (cli->banner[0] != '\0') {
-      CLI_WSTR(cli, CLI_CRLF);
-      cli_write_str(cli, cli->banner);
-      CLI_WSTR(cli, CLI_CRLF);
-    }
+      if (cli->banner[0] != '\0') {
+        CLI_WSTR(cli, CLI_CRLF);
+        cli_write_str(cli, cli->banner);
+        CLI_WSTR(cli, CLI_CRLF);
+      }
 #endif
 
 #if CLI_ENABLE_AUTH
-    if (cli->require_auth || cli->auth_requested) {
-      cli->auth_requested = False;
-      cli->auth_attempts = 0;
-      cli->auth_lockout_started_ts = 0UL;
-      cli_auth_prompt_username(cli);
-      cli->session_state = CLI_SESSION_RUN;
-    } else {
-      cli->auth_state = CLI_AUTH_NONE;
+      if (cli->require_auth || cli->auth_requested) {
+        cli->auth_requested = False;
+        cli->auth_attempts = 0;
+        cli->auth_lockout_started_ts = 0UL;
+        cli_auth_prompt_username(cli);
+        cli->session_state = CLI_SESSION_RUN;
+      } else {
+        cli->auth_state = CLI_AUTH_NONE;
+        cli->session_state = CLI_SESSION_RUN;
+        cli_show_prompt(cli);
+      }
+#else
       cli->session_state = CLI_SESSION_RUN;
       cli_show_prompt(cli);
-    }
-#else
-    cli->session_state = CLI_SESSION_RUN;
-    cli_show_prompt(cli);
 #endif
-  } else if (cli->session_state == CLI_SESSION_RUN && active) {
+    } else if (cli->session_state == CLI_SESSION_RUN && active) {
 #if CLI_ENABLE_PERIODIC_CALLBACK
-    if (cli->periodic_cb != NULL && cli->periodic_interval > 0UL && cli->time_source != NULL) {
-      uint32_t now = cli->time_source(cli->time_source_ctx);
-      uint32_t elapsed = (now - cli->last_periodic_ts);
-      if (elapsed >= cli->periodic_interval) {
-        cli->last_periodic_ts = now;
-        int8_t rr = cli->periodic_cb(cli);
-        if (rr != CLI_OK) {
-          cli->session_state = CLI_SESSION_STOP;
-          result = rr;
-          active = False;
+      if (cli->periodic_cb != NULL && cli->periodic_interval > 0UL && cli->time_source != NULL) {
+        uint32_t now = cli->time_source(cli->time_source_ctx);
+        uint32_t elapsed = (now - cli->last_periodic_ts);
+        if (elapsed >= cli->periodic_interval) {
+          cli->last_periodic_ts = now;
+          int8_t rr = cli->periodic_cb(cli);
+          if (rr != CLI_OK) {
+            cli->session_state = CLI_SESSION_STOP;
+            result = rr;
+            active = False;
+          }
         }
       }
-    }
 #endif
 
 #if CLI_ENABLE_IDLE_TIMEOUT
-    if (active) {
-      int8_t timeout_rc = cli_check_idle_timeout(cli);
-      if (timeout_rc != CLI_OK) {
-        cli->session_state = CLI_SESSION_STOP;
-        result = timeout_rc;
-        active = False;
+      if (active) {
+        int8_t timeout_rc = cli_check_idle_timeout(cli);
+        if (timeout_rc != CLI_OK) {
+          cli->session_state = CLI_SESSION_STOP;
+          result = timeout_rc;
+          active = False;
+        }
       }
-    }
 #endif
 
-    if (active && cli->session_state != CLI_SESSION_RUN) {
-      /* The idle policy or a callback restarted the session: pending input waits until the
-       * banner and the login prompt / prompt have been shown. Or a callback stopped it. */
-      active = False;
-      if (cli->session_state == CLI_SESSION_STOP) {
-        result = CLI_ERR_QUIT;
+      if (active && cli->session_state != CLI_SESSION_RUN) {
+        /* The idle policy or a callback restarted the session: pending input waits until the
+         * banner and the login prompt / prompt have been shown. Or a callback stopped it. */
+        active = False;
+        if (cli->session_state == CLI_SESSION_STOP) {
+          result = CLI_ERR_QUIT;
+        }
       }
-    }
 
 #if CLI_ENABLE_AUTH
-    if (active && cli->auth_state == CLI_AUTH_LOCKOUT) {
-      if (cli_auth_lockout_unending(cli)) {
-        /* The clock was removed during a timed lockout, which can then never end: close the
-         * session, as cli_auth_limit_reached() does when a lockout would start without one. */
-        CLI_WSTR(cli, "% Too many failed attempts. Closing Session.\r\n");
-        cli->session_state = CLI_SESSION_STOP;
-        result = CLI_ERR_AUTH;
-        active = False;
-      } else if (cli_auth_lockout_expired(cli)) {
-        cli_auth_lockout_end(cli);
-      } else {
-        /* Still locked out. */
+      if (active && cli->auth_state == CLI_AUTH_LOCKOUT) {
+        if (cli_auth_lockout_unending(cli)) {
+          /* The clock was removed during a timed lockout, which can then never end: close the
+           * session, as cli_auth_limit_reached() does when a lockout would start without one. */
+          CLI_WSTR(cli, "% Too many failed attempts. Closing Session.\r\n");
+          cli->session_state = CLI_SESSION_STOP;
+          result = CLI_ERR_AUTH;
+          active = False;
+        } else if (cli_auth_lockout_expired(cli)) {
+          cli_auth_lockout_end(cli);
+        } else {
+          /* Still locked out. */
+        }
       }
-    }
 #endif
 
-    if (active) {
-      /* At most CLI_MAX_RX_BYTES_PER_TICK bytes per call: the rest stays in the transport
-       * for the next call, so a continuous input stream cannot keep this call running. */
-      uint32_t budget = (uint32_t)CLI_MAX_RX_BYTES_PER_TICK;
-      bool keep_going = True;
+      if (active) {
+        /* At most CLI_MAX_RX_BYTES_PER_TICK bytes per call: the rest stays in the transport
+         * for the next call, so a continuous input stream cannot keep this call running. */
+        uint32_t budget = (uint32_t)CLI_MAX_RX_BYTES_PER_TICK;
+        bool keep_going = True;
 
-      while (keep_going && budget > 0U) {
-        cli_transport_ret_t available_rc = cli->transport.available(cli->transport.ctx);
-        cli_transport_ret_t b;
-        int8_t rc;
+        while (keep_going && budget > 0U) {
+          cli_transport_ret_t available_rc = cli->transport.available(cli->transport.ctx);
+          cli_transport_ret_t b;
+          int8_t rc;
 
-        if (available_rc < 0) {
-          cli->session_state = CLI_SESSION_STOP;
-          result = CLI_ERR;
-          active = False;
-          keep_going = False;
-        } else if (available_rc == 0) {
-          keep_going = False;
-        } else {
-          budget--;
-          b = cli->transport.read(cli->transport.ctx);
-          if (b < 0) {
+          if (available_rc < 0) {
             cli->session_state = CLI_SESSION_STOP;
             result = CLI_ERR;
             active = False;
             keep_going = False;
+          } else if (available_rc == 0) {
+            keep_going = False;
           } else {
-#if CLI_ENABLE_AUTH
-            if (cli->auth_state == CLI_AUTH_LOCKOUT) {
-              rc = CLI_OK; /* typed during the lockout: discarded, never replayed afterwards */
-            } else if (cli_state_is_auth_input(cli)) {
-              rc = cli_auth_handle(cli, b);
-            } else
-#endif
-            {
-              rc = cli_feed(cli, b);
-            }
-            if (rc != CLI_OK) {
+            budget--;
+            b = cli->transport.read(cli->transport.ctx);
+            if (b < 0) {
               cli->session_state = CLI_SESSION_STOP;
-              result = rc;
+              result = CLI_ERR;
               active = False;
-              keep_going = False;
-            } else if (cli->tx_error) {
-              /* The peer is gone: do not run further commands nobody will see. */
-              keep_going = False;
-            } else if (cli->session_state == CLI_SESSION_STOP) {
-              /* A command stopped the session (e.g. cli_exec("quit") with its own result
-               * CLI_OK): report it now, like the callback path. */
-              result = CLI_ERR_QUIT;
-              active = False;
-              keep_going = False;
-            } else if (cli->session_state != CLI_SESSION_RUN) {
-              /* Session restarted (quit/exit policy): leave the remaining input for the
-               * next tick, after the banner / login prompt has been shown. */
               keep_going = False;
             } else {
-              /* Keep draining the transport (input during a lockout that just began is
-               * discarded by the same loop). */
+#if CLI_ENABLE_AUTH
+              if (cli->auth_state == CLI_AUTH_LOCKOUT) {
+                rc = CLI_OK; /* typed during the lockout: discarded, never replayed afterwards */
+              } else if (cli_state_is_auth_input(cli)) {
+                rc = cli_auth_handle(cli, b);
+              } else
+#endif
+              {
+                rc = cli_feed(cli, b);
+              }
+              if (rc != CLI_OK) {
+                cli->session_state = CLI_SESSION_STOP;
+                result = rc;
+                active = False;
+                keep_going = False;
+              } else if (cli->tx_error) {
+                /* The peer is gone: do not run further commands nobody will see. */
+                keep_going = False;
+              } else if (cli->session_state == CLI_SESSION_STOP) {
+                /* A command stopped the session (e.g. cli_exec("quit") with its own result
+                 * CLI_OK): report it now, like the callback path. */
+                result = CLI_ERR_QUIT;
+                active = False;
+                keep_going = False;
+              } else if (cli->session_state != CLI_SESSION_RUN) {
+                /* Session restarted (quit/exit policy): leave the remaining input for the
+                 * next tick, after the banner / login prompt has been shown. */
+                keep_going = False;
+              } else {
+                /* Keep draining the transport (input during a lockout that just began is
+                 * discarded by the same loop). */
+              }
             }
           }
         }
       }
+    } else {
+      /* To silence MISRA */
     }
-  } else {
-    /* To silence MISRA */
-  }
 
-  if (cli->tx_error && cli->session_state != CLI_SESSION_STOP) {
-    cli->session_state = CLI_SESSION_STOP;
-    result = CLI_ERR;
-  }
+    if (cli->tx_error && cli->session_state != CLI_SESSION_STOP) {
+      cli->session_state = CLI_SESSION_STOP;
+      result = CLI_ERR;
+    }
 
-  /* Everything this tick wrote (echo, line edits, completions, the message before a close)
-   * reaches the peer now, not only with the next prompt. */
-  cli_flush(cli);
+    /* Everything this tick wrote (echo, line edits, completions, the message before a close)
+     * reaches the peer now, not only with the next prompt. */
+    cli_flush(cli);
 
 #if CLI_ENABLE_TIMMING_STATS
-  if (tick_clock != NULL && cli->micros_source == tick_clock &&
-      cli->micros_source_ctx == tick_clock_ctx) {
-    uint32_t elapsed = tick_clock(tick_clock_ctx) - t0;
-    cli_tick_stats_struct_t *s = &cli->tick_stats;
-    /* Saturate rather than wrap: a wrapped count would divide by zero below. */
-    if (s->count < UINT32_MAX) {
-      s->count++;
+    if (tick_clock != NULL && cli->micros_source == tick_clock &&
+        cli->micros_source_ctx == tick_clock_ctx) {
+      uint32_t elapsed = tick_clock(tick_clock_ctx) - t0;
+      cli_tick_stats_struct_t *s = &cli->tick_stats;
+      /* Saturate rather than wrap: a wrapped count would divide by zero below. */
+      if (s->count < UINT32_MAX) {
+        s->count++;
+      }
+      if (s->count == 1U || elapsed < s->min_us) {
+        s->min_us = elapsed;
+      }
+      if (elapsed > s->max_us) {
+        s->max_us = elapsed;
+      }
+      int64_t avg_delta = ((int64_t)elapsed - (int64_t)s->avg_us) / (int64_t)s->count;
+      s->avg_us = (uint32_t)((int64_t)s->avg_us + avg_delta);
     }
-    if (s->count == 1U || elapsed < s->min_us) {
-      s->min_us = elapsed;
-    }
-    if (elapsed > s->max_us) {
-      s->max_us = elapsed;
-    }
-    int64_t avg_delta = ((int64_t)elapsed - (int64_t)s->avg_us) / (int64_t)s->count;
-    s->avg_us = (uint32_t)((int64_t)s->avg_us + avg_delta);
-  }
 #endif /* CLI_ENABLE_TIMMING_STATS */
+  }
 
   return result;
 }
