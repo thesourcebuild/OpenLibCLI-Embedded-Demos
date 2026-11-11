@@ -15,6 +15,7 @@ extern "C"
     int client_fd;
     uint8_t state;
     uint8_t verb;
+    uint16_t sb_len; /* bytes consumed in the current sub-negotiation */
     bool negotiated;
     bool local_echo;
     bool local_sga;

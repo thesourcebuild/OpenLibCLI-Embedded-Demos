@@ -30,6 +30,12 @@
 #define TELNET_STATE_SB     3U
 #define TELNET_STATE_SB_IAC 4U
 
+#ifndef CLI_TELNET_MAX_SB_LEN
+/* Longest sub-negotiation payload accepted; a longer block (no IAC SE from a broken client)
+ * is abandoned so it cannot swallow the input that follows. */
+#define CLI_TELNET_MAX_SB_LEN 64U
+#endif
+
 /*=======================================================================================
  * Private Variables
  *=======================================================================================*/
@@ -95,6 +101,7 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_t *ctx,
     ctx->client_pcb = client_pcb;
     ctx->state = TELNET_STATE_NORMAL;
     ctx->verb = 0;
+    ctx->sb_len = 0;
     ctx->negotiated = false;
     ctx->local_echo = false;
     ctx->local_sga = false;
@@ -362,6 +369,7 @@ static bool telnet_process_byte(cli_telnet_ctx_t *ctx, uint8_t byte, uint8_t *ou
       ctx->state = TELNET_STATE_VERB;
     } else if (byte == TELNET_SB) {
       ctx->state = TELNET_STATE_SB;
+      ctx->sb_len = 0;
     } else {
       ctx->state = TELNET_STATE_NORMAL;
     }
@@ -373,11 +381,32 @@ static bool telnet_process_byte(cli_telnet_ctx_t *ctx, uint8_t byte, uint8_t *ou
     break;
 
   case TELNET_STATE_SB:
-    ctx->state = (byte == TELNET_IAC) ? TELNET_STATE_SB_IAC : TELNET_STATE_SB;
+    if (byte == TELNET_IAC) {
+      ctx->state = TELNET_STATE_SB_IAC;
+    } else if (++ctx->sb_len > CLI_TELNET_MAX_SB_LEN) {
+      /* No IAC SE in sight (broken client): give up on the block so input is not
+       * swallowed forever. The remaining bytes are treated as normal data. */
+      ctx->state = TELNET_STATE_NORMAL;
+    } else {
+      /* Sub-negotiation payload (e.g. NAWS size) is not used. */
+    }
     break;
 
   case TELNET_STATE_SB_IAC:
-    ctx->state = (byte == TELNET_SE) ? TELNET_STATE_NORMAL : TELNET_STATE_SB;
+    if (byte == TELNET_SE) {
+      ctx->state = TELNET_STATE_NORMAL;
+    } else if (byte == TELNET_IAC) {
+      /* An escaped 0xFF is one payload byte: it counts towards the limit like any other. */
+      if (++ctx->sb_len > CLI_TELNET_MAX_SB_LEN) {
+        ctx->state = TELNET_STATE_NORMAL;
+      } else {
+        ctx->state = TELNET_STATE_SB;
+      }
+    } else {
+      /* IAC <command> inside SB: the block was never terminated; resume normal parsing. */
+      ctx->state = TELNET_STATE_IAC;
+      stored = telnet_process_byte(ctx, byte, out);
+    }
     break;
 
   default:

@@ -503,7 +503,9 @@ int format_i64(char *buf, int size, int64_t val) {
 
   if (val < 0) {
     /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
-    int digits = (size >= 2) ? format_u64(&buf[1], size - 1, (uint64_t)(-(val + 1)) + 1ULL) : 0;
+    int digits = (buf != NULL && size >= 2)
+                     ? format_u64(&buf[1], size - 1, (uint64_t)(-(val + 1)) + 1ULL)
+                     : 0;
     result = put_minus(buf, size, digits);
   } else {
     result = format_u64(buf, size, (uint64_t)val);
@@ -521,7 +523,7 @@ int format_hex64(char *buf, int size, uint64_t val) {
   }
 
   /* All or nothing: "0x" + digits + NUL must fit. */
-  if (2 + digits < size) {
+  if (buf != NULL && 2 + digits < size) {
     buf[0] = '0';
     buf[1] = 'x';
     for (int i = 0; i < digits; i++) {
@@ -530,7 +532,7 @@ int format_hex64(char *buf, int size, uint64_t val) {
     }
     result = 2 + digits;
     buf[result] = '\0';
-  } else if (size > 0) {
+  } else if (buf != NULL && size > 0) {
     buf[0] = '\0';
   } else {
     /* No space to write a terminator. */
@@ -558,7 +560,9 @@ int format_i32(char *buf, int size, int32_t val) {
 
   if (val < 0) {
     /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
-    int digits = (size >= 2) ? format_u32(&buf[1], size - 1, (uint32_t)(-(val + 1)) + 1U) : 0;
+    int digits = (buf != NULL && size >= 2)
+                     ? format_u32(&buf[1], size - 1, (uint32_t)(-(val + 1)) + 1U)
+                     : 0;
     result = put_minus(buf, size, digits);
   } else {
     result = format_u32(buf, size, (uint32_t)val);
@@ -594,7 +598,9 @@ int format_i8(char *buf, int size, int8_t val) {
 int format_hex8(char *buf, int size, uint8_t val) {
   int result = 0;
 
-  if (size < 3) {
+  if (buf == NULL) {
+    /* Nowhere to write. */
+  } else if (size < 3) {
     if (size > 0) {
       buf[0] = '\0';
     }
@@ -612,7 +618,10 @@ int format_hex8(char *buf, int size, uint8_t val) {
 
 int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len) {
   int pos = 0;
-  for (uint16_t i = 0; i < len; i++) {
+  /* No bytes are read without data, and nothing is written without buf. */
+  uint16_t count = (buf != NULL && data != NULL) ? len : 0U;
+
+  for (uint16_t i = 0; i < count; i++) {
     /* Room for [' '] + 2 hex digits + NUL terminator. */
     int needed = (i != 0U) ? 4 : 3;
     if (pos + needed > size) {
@@ -625,8 +634,8 @@ int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len) {
     int r = format_hex8(&buf[pos], size - pos, data[i]);
     pos += r;
   }
-  if (pos < size) {
-    buf[pos] = '\0';
+  if (buf != NULL && pos < size) {
+    buf[pos] = '\0'; /* also an empty string when data is NULL */
   }
   return pos;
 }
@@ -767,14 +776,14 @@ static bool parse_dec_i32(const char *s, int32_t min, int32_t max, int32_t *out)
 static int put_digits(char *buf, int size, const char *tmp, int len) {
   int pos = 0;
 
-  if (len < size) {
+  if (buf != NULL && len < size) {
     while (len > 0) {
       len--;
       buf[pos] = tmp[len];
       pos++;
     }
   }
-  if (size > 0) {
+  if (buf != NULL && size > 0) {
     buf[pos] = '\0';
   }
   return pos;
@@ -791,9 +800,9 @@ static int put_minus(char *buf, int size, int digits) {
   int result = 0;
 
   if (digits > 0) {
-    buf[0] = '-';
+    buf[0] = '-'; /* digits > 0: the magnitude was written, so buf is valid */
     result = digits + 1;
-  } else if (size > 0) {
+  } else if (buf != NULL && size > 0) {
     buf[0] = '\0';
   } else {
     /* No space to write a terminator. */

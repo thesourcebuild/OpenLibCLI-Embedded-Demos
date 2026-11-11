@@ -432,7 +432,8 @@ OPENLIBCLI_API bool strtol_parse_double(const char *s, double *out);
  * All decimal and hex formatters are all-or-nothing: if the complete text plus
  * its NUL terminator does not fit in @p size bytes, an empty string is written
  * and 0 is returned (a cut-off number would read as a different value). The
- * output is always NUL-terminated when @p size > 0.
+ * output is always NUL-terminated when @p size > 0. A @c NULL @p buf writes
+ * nothing and returns 0.
  *
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
@@ -556,7 +557,8 @@ OPENLIBCLI_API int format_hex8(char *buf, int size, uint8_t val);
  * @brief Format a byte array as "AB CD EF ..." (uppercase hex, space separated).
  *
  * Only whole bytes are written: output stops at the last byte that fits
- * together with its separator and the NUL terminator.
+ * together with its separator and the NUL terminator. A @c NULL @p buf writes
+ * nothing and returns 0; a @c NULL @p data gives an empty string.
  *
  * @param[out] buf  Destination buffer.
  * @param[in]  size Buffer size in bytes.
