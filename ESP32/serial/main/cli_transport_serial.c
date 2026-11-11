@@ -15,38 +15,59 @@ static bool s_uart_installed = false;
 
 static cli_transport_ret_t esp_serial_available(void *ctx)
 {
+  cli_transport_ret_t result = 0;
+  size_t len = 0;
+
   (void)ctx;
-  if (!s_uart_installed) return 0;
-  size_t len;
-  esp_err_t err = uart_get_buffered_data_len(CLI_UART_NUM, &len);
-  return (err == ESP_OK && len > 0) ? 1 : 0;
+  if (s_uart_installed && uart_get_buffered_data_len(CLI_UART_NUM, &len) == ESP_OK && len > 0)
+  {
+    result = 1;
+  }
+  return result;
 }
 
 static cli_transport_ret_t esp_serial_read(void *ctx)
 {
-  (void)ctx;
-  if (!s_uart_installed) return CLI_ERR;
+  cli_transport_ret_t result = CLI_ERR;
   uint8_t c;
-  int len = uart_read_bytes(CLI_UART_NUM, &c, 1, 0);
-  return (len > 0) ? (cli_transport_ret_t)c : CLI_ERR;
+
+  (void)ctx;
+  if (s_uart_installed && uart_read_bytes(CLI_UART_NUM, &c, 1, 0) > 0)
+  {
+    result = (cli_transport_ret_t)c;
+  }
+  return result;
 }
 
 static cli_transport_ret_t esp_serial_write(void *ctx, const uint8_t *buf, cli_transport_buflen_t len)
 {
+  cli_transport_ret_t result = CLI_ERR;
+
   (void)ctx;
-  if (!s_uart_installed || buf == NULL || len == 0) {
-    return CLI_ERR;
+  if (s_uart_installed && buf != NULL && len > 0)
+  {
+    /* uart_write_bytes() queues all of it (blocking while the ring buffer is full) and
+     * returns -1 on a parameter error: report that instead of claiming success. */
+    int written = uart_write_bytes(CLI_UART_NUM, (const char *)buf, len);
+    if (written > 0)
+    {
+      result = (cli_transport_ret_t)written;
+    }
   }
-  uart_write_bytes(CLI_UART_NUM, (const char *)buf, len);
-  return (cli_transport_ret_t)len;
+  return result;
 }
 
 static cli_transport_ret_t esp_serial_flush(void *ctx)
 {
+  cli_transport_ret_t result = CLI_ERR;
+
   (void)ctx;
-  if (!s_uart_installed) return CLI_ERR;
-  uart_wait_tx_done(CLI_UART_NUM, portMAX_DELAY);
-  return CLI_OK;
+  if (s_uart_installed)
+  {
+    uart_wait_tx_done(CLI_UART_NUM, portMAX_DELAY);
+    result = CLI_OK;
+  }
+  return result;
 }
 
 void cli_transport_serial_init(cli_transport_struct_t *transport)

@@ -7,10 +7,9 @@ static int s_pending_byte = PICO_ERROR_TIMEOUT;
 
 static cli_transport_ret_t pico_serial_available(void *ctx) {
   (void)ctx;
-  if (s_pending_byte != PICO_ERROR_TIMEOUT) {
-    return 1;
+  if (s_pending_byte == PICO_ERROR_TIMEOUT) {
+    s_pending_byte = getchar_timeout_us(0); /* kept for pico_serial_read() */
   }
-  s_pending_byte = getchar_timeout_us(0);
   return (s_pending_byte != PICO_ERROR_TIMEOUT) ? 1 : 0;
 }
 
@@ -30,14 +29,16 @@ static cli_transport_ret_t pico_serial_read(void *ctx) {
 }
 
 static cli_transport_ret_t pico_serial_write(void *ctx, const uint8_t *buf, cli_transport_buflen_t len) {
+  cli_transport_ret_t result = CLI_ERR;
+
   (void)ctx;
-  if (buf == NULL || len == 0) {
-    return CLI_ERR;
+  if (buf != NULL && len > 0) {
+    for (cli_transport_buflen_t i = 0; i < len; i++) {
+      putchar(buf[i]);
+    }
+    result = (cli_transport_ret_t)len;
   }
-  for (cli_transport_buflen_t i = 0; i < len; i++) {
-    putchar(buf[i]);
-  }
-  return (cli_transport_ret_t)len;
+  return result;
 }
 
 static cli_transport_ret_t pico_serial_flush(void *ctx) {

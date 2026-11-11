@@ -20,12 +20,12 @@ typedef struct {
   bool local_sga;
   bool remote_naws;
   bool remote_linemode_rejected;
-  uint8_t rx_buf[256];
-  volatile uint16_t rx_len;
-  volatile uint16_t rx_pos;
-  uint8_t raw_buf[256];
-  volatile uint16_t raw_len;
-  volatile uint16_t raw_pos;
+  uint8_t rx_buf[256];   /* decoded input for the CLI engine */
+  uint16_t rx_len;
+  uint16_t rx_pos;
+  uint8_t raw_buf[256];  /* raw bytes taken from rx_queue for decoding */
+  struct pbuf *rx_queue; /* received segments not yet decoded (lwIP lock) */
+  bool peer_closed;      /* the client closed its side (lwIP lock) */
   bool started;
   bool input_started;
 } cli_telnet_ctx_t;
@@ -38,6 +38,9 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_t *ctx,
                                      struct tcp_pcb *client_pcb);
 
 void cli_transport_telnet_negotiate(cli_telnet_ctx_t *ctx);
+
+/* Close the client connection (if any) and free the input still queued. */
+void cli_transport_telnet_close(cli_telnet_ctx_t *ctx);
 
 bool cli_transport_telnet_client_connected(const cli_telnet_ctx_t *ctx);
 

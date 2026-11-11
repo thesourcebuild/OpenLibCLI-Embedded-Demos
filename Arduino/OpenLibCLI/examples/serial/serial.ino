@@ -422,8 +422,9 @@ static uint32_t arduino_micros(void *ctx) {
 }
 
 static void arduino_print_tick_stats(void) {
-  cli_tick_stats_t stats = cli_tick_stats_get(&s_cli);
+  cli_tick_stats_struct_t stats;
 
+  cli_tick_stats_get(&s_cli, &stats);
   Serial.print("poll us  min=");
   Serial.print(stats.min_us);
   Serial.print("  max=");

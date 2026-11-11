@@ -97,26 +97,24 @@ static cli_transport_ret_t cli_telnet_transport_flush(void *raw_ctx);
  *=======================================================================================*/
 
 void cli_transport_telnet_init(cli_telnet_ctx_struct_t *ctx, cli_transport_struct_t *transport, void *client_handle) {
-  if (!ctx || !transport) {
-    return;
+  if (ctx && transport) {
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->client_handle = client_handle;
+
+    // Disable Nagle's algorithm to reduce lag for interactive CLI
+    if (client_handle) {
+      ((WiFiClient *)client_handle)->setNoDelay(true);
+    }
+
+    ctx->state = TELNET_STATE_NORMAL;
+
+    transport->available = cli_telnet_transport_available;
+    transport->read = cli_telnet_transport_read;
+    transport->write = cli_telnet_transport_write;
+    transport->flush = cli_telnet_transport_flush;
+    transport->ctx = ctx;
+    transport->kind = CLI_TRANSPORT_TELNET;
   }
-
-  memset(ctx, 0, sizeof(*ctx));
-  ctx->client_handle = client_handle;
-
-  // Disable Nagle's algorithm to reduce lag for interactive CLI
-  if (client_handle) {
-    ((WiFiClient *)client_handle)->setNoDelay(true);
-  }
-
-  ctx->state = TELNET_STATE_NORMAL;
-
-  transport->available = cli_telnet_transport_available;
-  transport->read = cli_telnet_transport_read;
-  transport->write = cli_telnet_transport_write;
-  transport->flush = cli_telnet_transport_flush;
-  transport->ctx = ctx;
-  transport->kind = CLI_TRANSPORT_TELNET;
 }
 
 void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, void *client_handle) {
@@ -163,10 +161,8 @@ int8_t cli_telnet_handler(cli_telnet_ctx_struct_t *ctx) {
   int8_t result = CLI_OK;
 
   if (ctx && ctx->rx_pos < ctx->rx_len) {
-    return CLI_OK;
-  }
-
-  if (!ctx || !client) {
+    /* Decoded input is still waiting to be read: nothing to receive yet. */
+  } else if (!ctx || !client) {
     result = CLI_ERR;
   } else {
     while (client->available() > 0 && ctx->rx_len < sizeof(ctx->rx_buf)) {

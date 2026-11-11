@@ -109,6 +109,7 @@ typedef struct {
 static WiFiServer s_telnet_server((uint16_t)CLI_TELNET_PORT);
 static WiFiClient s_telnet_client;
 static bool s_client_active = false;
+static bool s_server_started = false; /* WiFi connected and the server listening */
 
 static demo_app_data_t s_app;
 static cli_struct_t s_cli;
@@ -163,23 +164,27 @@ void setup(void) {
 
   if (!wifi_connect_blocking()) {
     Serial.println("WiFi connection failed. Check CLI_WIFI_SSID / CLI_WIFI_PASSWORD.");
-    return;
+  } else {
+    s_telnet_server.begin();
+    s_server_started = true;
+    Serial.print("WiFi connected. IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Telnet server listening on port ");
+    Serial.println((uint16_t)CLI_TELNET_PORT);
   }
-
-  s_telnet_server.begin();
-  Serial.print("WiFi connected. IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Telnet server listening on port ");
-  Serial.println((uint16_t)CLI_TELNET_PORT);
 }
 
 void loop(void) {
   WiFiClient incoming;
+
+  /* Without WiFi the server was never started: there is nothing to accept or serve. */
+  if (s_server_started) {
 #if defined(ARDUINO_ARCH_RP2040)
-  incoming = s_telnet_server.accept();
+    incoming = s_telnet_server.accept();
 #else
-  incoming = s_telnet_server.available();
+    incoming = s_telnet_server.available();
 #endif
+  }
   if (incoming) {
     if (!s_client_active || !s_telnet_client.connected()) {
       if (s_client_active) {
@@ -198,13 +203,16 @@ void loop(void) {
   }
 
   if (s_client_active) {
-    if (s_telnet_client.connected()) {
-      cli_telnet_poll();
+    /* Ends the session (and the connection) when the client went away or the session
+     * closed itself ('quit', idle timeout, failed logins). */
+    cli_telnet_poll();
 
 #if CLI_ENABLE_TIMMING_STATS
+    if (s_client_active) {
       uint32_t now_ms = (uint32_t)millis();
       if ((now_ms - s_last_stats_ms) >= CLI_STATS_PERIOD_MS) {
-        cli_tick_stats_t stats = cli_tick_stats_get(&s_cli);
+        cli_tick_stats_struct_t stats;
+        cli_tick_stats_get(&s_cli, &stats);
         Serial.print("poll us  min=");
         Serial.print(stats.min_us);
         Serial.print("  max=");
@@ -215,13 +223,8 @@ void loop(void) {
         Serial.println(stats.count);
         s_last_stats_ms = now_ms;
       }
-#endif
-    } else {
-      cli_telnet_demo_shutdown();
-      s_telnet_client.stop();
-      s_client_active = false;
-      Serial.println("Telnet client disconnected.");
     }
+#endif
   }
 }
 
@@ -260,13 +263,13 @@ static bool wifi_connect_blocking(void) {
     retries++;
   } while (WiFi.status() != WL_CONNECTED && retries < 5);
 
-  if (WiFi.status() != WL_CONNECTED) {
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  if (!connected) {
     Serial.print("WiFi status code: ");
     Serial.println((int)WiFi.status());
-    return false;
   }
 
-  return true;
+  return connected;
 }
 
 
@@ -473,8 +476,11 @@ static void cli_telnet_demo_setup(void *client_handle) {
 	// Uncomment the below line
 	cli_set_ansi_supported(&s_cli, false);
 	  
-    cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
-    cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
+    /* One client at a time: 'exit' / 'quit' and an idle timeout end the connection so the
+     * next client can get in (a serial port, which cannot reconnect, restarts instead). */
+    cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_CLOSE_SESSION);
+    cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_CLOSE_SESSION);
+    cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
 
     s_session_id++;
     memset(&s_app, 0, sizeof(s_app));
@@ -516,7 +522,12 @@ static void cli_telnet_poll(void) {
 }
 
 static void cli_telnet_demo_shutdown(void) {
+  /* The session is over: drop the connection too, so the client is not left hanging and
+   * the next client is accepted. */
   cli_done(&s_cli);
+  s_telnet_client.stop();
+  s_client_active = false;
+  Serial.println("Telnet session ended.");
 }
 
 static uint32_t arduino_now_sec(void *ctx) {

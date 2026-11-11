@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -85,44 +86,49 @@ void app_main(void)
 
   xSemaphoreTake(s_ip_obtained, portMAX_DELAY);
 
-  int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (listen_fd < 0)
-    return;
-
-  int opt = 1;
-  setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
   struct sockaddr_in addr = {
       .sin_family = AF_INET,
       .sin_port = htons(CLI_TELNET_PORT),
       .sin_addr.s_addr = htonl(INADDR_ANY),
   };
+  int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+  bool listening = (listen_fd >= 0);
 
-  if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+  if (listening)
   {
-    close(listen_fd);
-    return;
+    int opt = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    listening = (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+                 listen(listen_fd, 1) == 0);
+    if (!listening)
+    {
+      close(listen_fd);
+    }
   }
-  listen(listen_fd, 1);
-
-  struct sockaddr_in client_addr;
-  socklen_t client_len = sizeof(client_addr);
-  int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr,
-                         &client_len);
-  if (client_fd < 0)
+  if (!listening)
   {
-    close(listen_fd);
-    return;
-  }
-  close(listen_fd);
-
-  cli_demo_setup(client_fd);
-
-  while (1)
-  {
-    cli_demo_poll();
-    vTaskDelay(pdMS_TO_TICKS(10));
+    printf("Telnet server could not listen on port %d\r\n", CLI_TELNET_PORT);
   }
 
-  cli_demo_shutdown();
+  /* One client at a time; when its session ends (disconnect) the next client is accepted. */
+  while (listening)
+  {
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
+
+    if (client_fd < 0)
+    {
+      vTaskDelay(pdMS_TO_TICKS(100)); /* back off: persistent errors would spin */
+    }
+    else
+    {
+      cli_demo_setup(client_fd);
+      while (cli_demo_is_running() != 0U)
+      {
+        cli_demo_poll();
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    }
+  }
 }

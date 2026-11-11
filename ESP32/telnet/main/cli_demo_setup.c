@@ -111,8 +111,11 @@ void cli_demo_setup(int client_fd)
   cli_register_commands(&s_cli);
 
   cli_set_ansi_supported(&s_cli, true);
-  cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
-  cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
+  /* One client at a time: 'exit' / 'quit' and an idle timeout end the connection so the
+   * next client can get in (a serial port, which cannot reconnect, restarts instead). */
+  cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_CLOSE_SESSION);
+  cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_CLOSE_SESSION);
+  cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
 
   s_session_id++;
   memset(&s_app, 0, sizeof(s_app));
@@ -142,15 +145,15 @@ void cli_demo_setup(int client_fd)
 
 void cli_demo_poll(void)
 {
-  if (!s_initialised)
-    return;
-
-  cli_telnet_handler(&s_telnet_ctx);
-
-  /* Process CLI engine */
-  if (cli_session_engine(&s_cli) != CLI_OK)
+  if (s_initialised)
   {
-    cli_demo_shutdown();
+    cli_telnet_handler(&s_telnet_ctx);
+
+    /* Process CLI engine */
+    if (cli_session_engine(&s_cli) != CLI_OK)
+    {
+      cli_demo_shutdown();
+    }
   }
 }
 

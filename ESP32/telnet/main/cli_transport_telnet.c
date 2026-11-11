@@ -1,10 +1,10 @@
 /**
- * @file cli_transport_telnet.cpp
- * @brief Arduino Telnet transport adapter implementation for open-libcli.
+ * @file cli_transport_telnet.c
+ * @brief ESP-IDF (lwIP sockets) Telnet transport adapter implementation for OpenLibCLI.
  *
  * Implements Telnet IAC negotiation, option responses, protocol-byte
- * stripping on receive, and IAC escaping on transmit for Arduino network
- * clients.
+ * stripping on receive, and IAC escaping on transmit for a connected
+ * client socket.
  *
  *
  * @copyright Copyright (c) 2026 Muhammad Hassaan Shah
@@ -17,11 +17,18 @@
 #include <string.h>
 #include <stdbool.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <errno.h>
 #include "cli_transport_telnet.h"
+
+#ifndef CLI_TELNET_SEND_TIMEOUT_MS
+/* How long a send may wait for a client that does not read its output: the session then
+ * ends instead of the CLI task blocking forever. */
+#define CLI_TELNET_SEND_TIMEOUT_MS 5000
+#endif
 
 /*=======================================================================================
  * Private Defines
@@ -113,26 +120,33 @@ void cli_transport_telnet_init(cli_telnet_ctx_struct_t *ctx,
                                cli_transport_struct_t *transport,
                                int client_fd)
 {
-  if (!ctx || !transport)
-    return;
-
-  memset(ctx, 0, sizeof(*ctx));
-  ctx->client_fd = client_fd;
-  ctx->state = TELNET_STATE_NORMAL;
-
-  /* Disable Nagle's algorithm to reduce lag for interactive CLI */
-  if (client_fd >= 0)
+  if (ctx && transport)
   {
-    int flag = 1;
-    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-  }
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->client_fd = client_fd;
+    ctx->state = TELNET_STATE_NORMAL;
 
-  transport->available = cli_telnet_transport_available;
-  transport->read = cli_telnet_transport_read;
-  transport->write = cli_telnet_transport_write;
-  transport->flush = cli_telnet_transport_flush;
-  transport->ctx = ctx;
-  transport->kind = CLI_TRANSPORT_TELNET;
+    if (client_fd >= 0)
+    {
+      /* Disable Nagle's algorithm to reduce lag for interactive CLI */
+      int flag = 1;
+      struct timeval send_timeout;
+
+      setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+      /* send() blocks while the client's receive window is full: bound that wait, so a
+       * client that stops reading ends its session instead of stalling the device. */
+      send_timeout.tv_sec = CLI_TELNET_SEND_TIMEOUT_MS / 1000;
+      send_timeout.tv_usec = (CLI_TELNET_SEND_TIMEOUT_MS % 1000) * 1000;
+      setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+    }
+
+    transport->available = cli_telnet_transport_available;
+    transport->read = cli_telnet_transport_read;
+    transport->write = cli_telnet_transport_write;
+    transport->flush = cli_telnet_transport_flush;
+    transport->ctx = ctx;
+    transport->kind = CLI_TRANSPORT_TELNET;
+  }
 }
 
 void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, int client_fd)

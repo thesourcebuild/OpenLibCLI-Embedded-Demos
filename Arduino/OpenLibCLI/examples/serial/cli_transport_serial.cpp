@@ -66,17 +66,15 @@ static cli_transport_ret_t arduino_serial_flush(void *ctx);
  *=======================================================================================*/
 
 void cli_transport_serial_init(cli_transport_struct_t *transport) {
-  if (!transport) {
-    return;
+  if (transport) {
+    memset(transport, 0, sizeof(*transport));
+    transport->kind = CLI_TRANSPORT_SERIAL;
+
+    transport->available = arduino_serial_available;
+    transport->read = arduino_serial_read;
+    transport->write = arduino_serial_write;
+    transport->flush = arduino_serial_flush;
   }
-
-  memset(transport, 0, sizeof(*transport));
-  transport->kind = CLI_TRANSPORT_SERIAL;
-
-  transport->available = arduino_serial_available;
-  transport->read = arduino_serial_read;
-  transport->write = arduino_serial_write;
-  transport->flush = arduino_serial_flush;
 }
 
 /*=======================================================================================
