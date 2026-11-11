@@ -118,10 +118,11 @@ void cli_demo_setup(struct tcp_pcb *client_pcb)
 
   cli_set_ansi_supported(&s_cli, true);
 
-  /* One client at a time: 'exit' / 'quit' and an idle timeout end the connection so the
-   * next client can get in (a serial port, which cannot reconnect, restarts instead). */
-  cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_CLOSE_SESSION);
-  cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_CLOSE_SESSION);
+  /* 'exit' / 'quit' restart the banner and login on the same connection. One client at a
+   * time: an idle connection is closed so the next client can get in. */
+  cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
+  cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
+  cli_set_idle_timeout(&s_cli, 60);
   cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
   cli_set_auth_failure_mode(&s_cli, CLI_AUTH_FAILURE_MODE_LOCKOUT);
 
@@ -140,7 +141,6 @@ void cli_demo_setup(struct tcp_pcb *client_pcb)
   cli_set_enable_secret(&s_cli, "cisco");
   cli_add_user(&s_cli, "admin", "admin", CLI_PRIV_PRIVILEGED);
   cli_require_authorization(&s_cli, true);
-  cli_set_idle_timeout(&s_cli, 60);
 #endif
 
 #if CLI_ENABLE_MODE_NAMES

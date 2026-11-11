@@ -480,6 +480,7 @@ static void cli_telnet_demo_setup(void *client_handle) {
      * next client can get in (a serial port, which cannot reconnect, restarts instead). */
     cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_CLOSE_SESSION);
     cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_CLOSE_SESSION);
+    cli_set_idle_timeout(&s_cli, 60);
     cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
 
     s_session_id++;
@@ -497,7 +498,6 @@ static void cli_telnet_demo_setup(void *client_handle) {
     cli_set_enable_secret(&s_cli, "cisco");
     cli_add_user(&s_cli, "admin", "admin", CLI_PRIV_PRIVILEGED);
     cli_require_authorization(&s_cli, true);
-    cli_set_idle_timeout(&s_cli, 60);
 #endif
 
 #if CLI_ENABLE_MODE_NAMES
