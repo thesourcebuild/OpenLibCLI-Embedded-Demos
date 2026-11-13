@@ -317,6 +317,7 @@ static bool cli_handle_valid(const cli_struct_t *cli, cli_cmd_handle_t h);
 static void cli_notify_mode_change(cli_struct_t *cli);
 static int8_t cli_nav_push(cli_struct_t *cli);
 static void cli_nav_return(cli_struct_t *cli, uint8_t level);
+static uint8_t cli_nav_floors_active(const cli_struct_t *cli);
 static void cli_nav_reset(cli_struct_t *cli);
 static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
                              cli_cmd_handle_t replacement);
@@ -380,7 +381,7 @@ static bool cli_keyword_shadowed(cli_struct_t *cli, const char *keyword, cli_cmd
 static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
                              cli_cmd_handle_t *parent, bool *args);
 static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli);
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node);
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t slot);
 static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli);
 
 /* Tab Completion -----------------------------------------------------------------------*/
@@ -449,7 +450,7 @@ static void cli_auth_backspace(cli_struct_t *cli);
 static void cli_auth_clear_input(cli_struct_t *cli);
 static void cli_auth_insert_char(cli_struct_t *cli, char c);
 static int8_t cli_auth_submit_line(cli_struct_t *cli);
-static int8_t cli_auth_run_callback(cli_struct_t *cli, cli_auth_fn fn);
+static int8_t cli_auth_enable_check(cli_struct_t *cli);
 static void cli_auth_enable_result(cli_struct_t *cli, int8_t ok, int8_t *rc);
 static int8_t cli_auth_handle(cli_struct_t *cli, int byte);
 #endif
@@ -2099,8 +2100,8 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
       redrawn = True; /* loaded and redrawn for editing */
     } else {
       cli->history_replay = (cli_history_idx_t)-1;
-      rc = CLI_OK;
     }
+    rc = CLI_OK; /* handled: CLI_EXEC_REPLAY_INPUT is internal, not a cli_exec() result */
   }
 #endif
 
@@ -4031,27 +4032,29 @@ static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli) {
  * reused; otherwise the current mode and context are pushed first.
  *
  * The callback may also have returned to an enclosing level first
- * (@c cli_set_mode() to an ancestor mode): @c nav_floor is the lowest level it
- * reached and @c nav_floor_priv the privilege in effect there. The level created
- * at @c nav_floor restores at most that privilege: one the callback granted for
- * the submenu ends when the submenu is left; one it gave up stays given up.
+ * (@c cli_set_mode() to an ancestor mode): the command's @c nav_floor entry is the
+ * lowest level it reached and its @c nav_floor_priv entry the privilege in effect
+ * there. The level created at that floor restores at most that privilege: one the
+ * callback granted for the submenu ends when the submenu is left; one it gave up
+ * stays given up.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] node  Submenu node to enter.
+ * @param[in] slot  The running command's entry in @c nav_floor (@c exec_depth - 1).
  *
  * @return @c CLI_OK, or @c CLI_ERR_NOMEM when the navigation stack is full.
  */
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node) {
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t slot) {
   int8_t rc = CLI_OK;
 
   if (cli->context != node) {
-    if (cli->nav_depth <= cli->nav_floor) {
+    if (cli->nav_depth <= cli->nav_floor[slot]) {
       rc = cli_nav_push(cli);
     }
     if (rc == CLI_OK) {
-      cli_nav_frame_struct_t *frame = &cli->nav_stack[cli->nav_floor];
-      if (frame->privilege > cli->nav_floor_priv) {
-        frame->privilege = cli->nav_floor_priv;
+      cli_nav_frame_struct_t *frame = &cli->nav_stack[cli->nav_floor[slot]];
+      if (frame->privilege > cli->nav_floor_priv[slot]) {
+        frame->privilege = cli->nav_floor_priv[slot];
       }
       cli->context = node;
     }
@@ -5061,13 +5064,13 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
         /* Execute this node's callback with remaining tokens as args */
         if (cmd->callback != NULL) {
           cli_argc_t rem_argc = argc - depth;
-          uint8_t outer_floor = cli->nav_floor;
-          cli_priv_t outer_floor_priv = cli->nav_floor_priv;
           cli_session_state_enum_t state_before = cli->session_state;
+          /* This command's entry: commands run from it (cli_exec()) use the ones above. */
+          uint8_t slot = (uint8_t)(cli->exec_depth - 1U);
 
           /* Track the lowest level this command reaches (cli_context_enter()). */
-          cli->nav_floor = cli->nav_depth;
-          cli->nav_floor_priv = cli->privilege;
+          cli->nav_floor[slot] = cli->nav_depth;
+          cli->nav_floor_priv[slot] = cli->privilege;
           rc = cmd->callback(cli, cmd->name, rem_argc, &argv[depth]);
 
           /* A bare submenu command (no arguments) enters that submenu. Its subcommands are
@@ -5076,17 +5079,10 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
            * callback, in which case navigation is left alone. */
           if (rc == CLI_OK && rem_argc == 1 && cli->session_state == state_before &&
               cli_handle_valid(cli, h) && cli_cmd_has_children(cli, h)) {
-            if (cli_context_enter(cli, h) != CLI_OK) {
+            if (cli_context_enter(cli, h, slot) != CLI_OK) {
               CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
               rc = CLI_ERR_NOMEM;
             }
-          }
-
-          /* A command that runs this one (cli_exec()) keeps tracking its own lowest level,
-           * which is this command's when this one went below it. */
-          if (outer_floor <= cli->nav_floor) {
-            cli->nav_floor = outer_floor;
-            cli->nav_floor_priv = outer_floor_priv;
           }
         } else {
           CLI_WSTR(cli, "% Incomplete command.\r\n");
@@ -5383,18 +5379,18 @@ static int8_t cli_auth_limit_reached(cli_struct_t *cli, cli_auth_state_enum_t re
 static int8_t cli_auth_verify(cli_struct_t *cli) {
   int8_t ok = CLI_ERR_AUTH;
   int8_t rc = CLI_OK;
+  cli_len_t match = -1;
 
   /* Every login starts from a clean, unprivileged state. */
   cli_nav_reset(cli);
   cli_set_privilege(cli, CLI_PRIV_USER);
 
   if (cli->authorization_cb != NULL) {
-    ok = cli_auth_run_callback(cli, cli->authorization_cb);
+    ok = cli->authorization_cb(cli, cli->auth_username, cli->input);
   } else {
     /* Every entry is checked with constant-time comparisons and without stopping at a
      * match, so response time does not reveal which usernames exist or how much of a
      * password was right. */
-    cli_len_t match = -1;
     for (cli_len_t i = 0; i < cli->num_users; i++) {
       bool user_ok = cli_secret_equal(cli->users[i], cli->auth_username, CLI_MAX_USERNAME_LEN);
       bool pass_ok = cli_secret_equal(cli->passwords[i], cli->input, CLI_MAX_PASSWORD_LEN);
@@ -5402,10 +5398,15 @@ static int8_t cli_auth_verify(cli_struct_t *cli) {
         match = i;
       }
     }
-    if (match >= 0) {
-      ok = CLI_OK;
-      cli_set_privilege(cli, cli->user_privileges[match]);
-    }
+  }
+
+  /* The typed password is not needed any more: gone before anything reacts to the result
+   * (privilege change, mode-change callback), so nothing can show or keep it. */
+  cli_wipe_input(cli);
+
+  if (match >= 0) {
+    ok = CLI_OK;
+    cli_set_privilege(cli, cli->user_privileges[match]);
   }
 
   if (cli->session_state != CLI_SESSION_RUN) {
@@ -5487,32 +5488,24 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli) {
     CLI_WSTR(cli, "Password: ");
     cli_flush(cli);
 
-  } else if (cli->auth_state == CLI_AUTH_PASSWORD) {
-    rc = cli_auth_verify(cli);
-    cli_wipe_input(cli); /* do not leave the password in memory */
+  } else if (cli->auth_state == CLI_AUTH_PASSWORD ||
+             cli->auth_state == CLI_AUTH_ENABLE_MODE_PASSWORD) {
+    bool outermost;
 
-  } else if (cli->auth_state == CLI_AUTH_ENABLE_MODE_PASSWORD) {
-    int8_t ok;
-
-    if (cli->enable_privilege_cb != NULL) {
-      ok = cli_auth_run_callback(cli, cli->enable_privilege_cb);
+    /* A credential check runs like a command: what a callback it runs or triggers (the
+     * authorization / enable callback, the mode-change callback) prints is command output,
+     * a prompt change it causes (cli_request_auth()) is shown after it, and a cli_exec() it
+     * makes goes after the typed secret and shows no prompt of its own; the prompt for the
+     * result follows once. */
+    cli->exec_used = cli->input_len + 1;
+    outermost = cli_command_begin(cli);
+    if (cli->auth_state == CLI_AUTH_PASSWORD) {
+      rc = cli_auth_verify(cli);
     } else {
-      ok = cli_secret_equal(cli->input, cli->enable_privilege_secret, CLI_MAX_ENABLE_SECRET_LEN)
-               ? CLI_OK
-               : CLI_ERR_AUTH;
+      rc = cli_auth_enable_check(cli);
     }
-    cli_wipe_input(cli); /* do not leave the secret in memory */
+    cli_command_end(cli, outermost);
 
-    if (cli->session_state != CLI_SESSION_RUN) {
-      /* The callback restarted or stopped the session: nothing of this attempt is shown. */
-    } else if (cli->auth_state != CLI_AUTH_ENABLE_MODE_PASSWORD) {
-      /* The callback asked for something else instead (cli_request_auth(): a new login).
-       * That replaces this attempt; its prompt is shown now, after the callback. */
-      cli_redisplay_input(cli);
-    } else {
-      cli->auth_state = cli->auth_resume_state;
-      cli_auth_enable_result(cli, ok, &rc);
-    }
   } else {
     /* To silence MISRA */
   }
@@ -5521,27 +5514,38 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli) {
 }
 
 /**
- * @brief Run a credential check callback (login or enable secret) like a command.
- *
- * Output it prints is finished properly, and a prompt change it causes
- * (@c cli_request_auth()) is shown after it rather than in the middle. The typed secret
- * occupies the editor's line, so a @c cli_exec() it makes is placed after it.
+ * @brief Check the typed enable secret and apply the result (inside the credential check's
+ *        command scope, @c cli_auth_submit_line()).
  *
  * @param[in] cli  Active CLI session.
- * @param[in] fn   Callback; receives the username and the typed secret.
  *
- * @return The callback's result.
+ * @return @c CLI_OK, or @c CLI_ERR_AUTH when the attempt limit closes the session.
  */
-static int8_t cli_auth_run_callback(cli_struct_t *cli, cli_auth_fn fn) {
-  bool outermost;
+static int8_t cli_auth_enable_check(cli_struct_t *cli) {
+  int8_t rc = CLI_OK;
   int8_t ok;
 
-  cli->exec_used = cli->input_len + 1;
-  outermost = cli_command_begin(cli);
-  ok = fn(cli, cli->auth_username, cli->input);
-  cli_command_end(cli, outermost);
+  if (cli->enable_privilege_cb != NULL) {
+    ok = cli->enable_privilege_cb(cli, cli->auth_username, cli->input);
+  } else {
+    ok = cli_secret_equal(cli->input, cli->enable_privilege_secret, CLI_MAX_ENABLE_SECRET_LEN)
+             ? CLI_OK
+             : CLI_ERR_AUTH;
+  }
+  cli_wipe_input(cli); /* do not leave the secret in memory */
 
-  return ok;
+  if (cli->session_state != CLI_SESSION_RUN) {
+    /* The callback restarted or stopped the session: nothing of this attempt is shown. */
+  } else if (cli->auth_state != CLI_AUTH_ENABLE_MODE_PASSWORD) {
+    /* The callback asked for something else instead (cli_request_auth(): a new login).
+     * That replaces this attempt; its prompt is shown now, after the callback. */
+    cli_redisplay_input(cli);
+  } else {
+    cli->auth_state = cli->auth_resume_state;
+    cli_auth_enable_result(cli, ok, &rc);
+  }
+
+  return rc;
 }
 
 /**
@@ -5792,6 +5796,21 @@ static int8_t cli_nav_push(cli_struct_t *cli) {
 }
 
 /**
+ * @brief Number of @c nav_floor entries in use: one per running command.
+ *
+ * Login checks and their callbacks also count as running (@c cli_command_begin()) without
+ * going through the @c CLI_MAX_EXEC_DEPTH check of @c cli_exec(), so the count is bounded
+ * by the size of the arrays as well.
+ *
+ * @param[in] cli  Active CLI session.
+ * @return Entries to update.
+ */
+static uint8_t cli_nav_floors_active(const cli_struct_t *cli) {
+  return (cli->exec_depth < (uint8_t)CLI_MAX_EXEC_DEPTH) ? cli->exec_depth
+                                                         : (uint8_t)CLI_MAX_EXEC_DEPTH;
+}
+
+/**
  * @brief Return to the saved navigation level @p level, discarding it and every
  *        level above it.
  *
@@ -5805,10 +5824,12 @@ static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
   const cli_nav_frame_struct_t *frame = &cli->nav_stack[level];
   bool changed = (frame->mode != cli->mode || frame->privilege != cli->privilege);
 
-  if (level < cli->nav_floor) {
-    /* A running command returned to an enclosing level (see cli_context_enter()). */
-    cli->nav_floor = level;
-    cli->nav_floor_priv = frame->privilege;
+  for (uint8_t k = 0U; k < cli_nav_floors_active(cli); k++) {
+    if (level < cli->nav_floor[k]) {
+      /* A running command returned to an enclosing level (see cli_context_enter()). */
+      cli->nav_floor[k] = level;
+      cli->nav_floor_priv[k] = frame->privilege;
+    }
   }
   cli->nav_depth = level;
   cli->mode = frame->mode;
@@ -5829,8 +5850,10 @@ static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
 static void cli_nav_reset(cli_struct_t *cli) {
   cli_mode_t old_mode = cli->mode;
 
-  cli->nav_floor = 0U;
-  cli->nav_floor_priv = CLI_PRIV_USER;
+  for (uint8_t k = 0U; k < (uint8_t)CLI_MAX_EXEC_DEPTH; k++) {
+    cli->nav_floor[k] = 0U;
+    cli->nav_floor_priv[k] = CLI_PRIV_USER;
+  }
   cli->nav_depth = 0U;
   cli->context = CLI_CMD_ROOT;
   cli->mode = CLI_MODE_EXEC;
@@ -5867,7 +5890,7 @@ static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
      * submenu that no longer exists: 'exit' would leave it without changing anything.
      * Such levels are dropped. */
     uint8_t kept = 0U;
-    uint8_t dropped_below_floor = 0U;
+    uint8_t dropped_below[CLI_MAX_EXEC_DEPTH] = {0U};
     for (uint8_t i = 0U; i < cli->nav_depth; i++) {
       const cli_nav_frame_struct_t *f = &cli->nav_stack[i];
       bool last = (i + 1U == cli->nav_depth);
@@ -5879,15 +5902,20 @@ static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
           f->privilege != above_privilege) {
         cli->nav_stack[kept] = *f;
         kept++;
-      } else if (i < cli->nav_floor) {
-        dropped_below_floor++;
       } else {
-        /* Dropped at or above a running command's lowest level. */
+        for (uint8_t k = 0U; k < cli_nav_floors_active(cli); k++) {
+          if (i < cli->nav_floor[k]) {
+            dropped_below[k]++;
+          }
+        }
       }
     }
     cli->nav_depth = kept;
-    /* The level a running command reached keeps its place among the remaining levels. */
-    cli->nav_floor = (uint8_t)(cli->nav_floor - dropped_below_floor);
+    /* The level each running command reached keeps its place among the remaining levels
+     * (a command may remove a submenu that encloses the commands running it). */
+    for (uint8_t k = 0U; k < cli_nav_floors_active(cli); k++) {
+      cli->nav_floor[k] = (uint8_t)(cli->nav_floor[k] - dropped_below[k]);
+    }
   }
 }
 
