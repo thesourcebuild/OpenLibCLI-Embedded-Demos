@@ -133,6 +133,8 @@ static uint32_t arduino_micros(void *ctx);
 static void arduino_print_tick_stats(void);
 #endif
 
+static bool parse_operand(const char *s, int32_t *out);
+
 /*=======================================================================================
  * Public Functions
  *=======================================================================================*/
@@ -254,22 +256,6 @@ int8_t cmd_arithmetic(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
   (void)argv;
   cli_set_mode(cli, APP_MODE_ARITHMETIC);
   return CLI_OK;
-}
-
-/* Parse one operand with the selected backend: false when it is not a whole number in
- * the int32_t range (nothing is stored then). */
-static bool parse_operand(const char *s, int32_t *out) {
-  bool ok;
-
-#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
-  ok = parse_i32(s, out);
-#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
-  ok = strtol_parse_i32(s, out);
-#else
-  ok = (cli_sscanf(s, "%" SCNd32, out) == 1);
-#endif
-
-  return ok;
 }
 
 int8_t cmd_add(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {
@@ -459,6 +445,22 @@ static void arduino_print_tick_stats(void) {
   Serial.println(stats.count);
 }
 #endif
+
+/* Parse one operand with the selected backend: false when it is not a whole number in
+ * the int32_t range (nothing is stored then). */
+static bool parse_operand(const char *s, int32_t *out) {
+  bool ok;
+
+#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
+  ok = parse_i32(s, out);
+#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
+  ok = strtol_parse_i32(s, out);
+#else
+  ok = (cli_sscanf(s, "%" SCNd32, out) == 1);
+#endif
+
+  return ok;
+}
 
 #endif
 
