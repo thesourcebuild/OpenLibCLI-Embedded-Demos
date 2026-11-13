@@ -45,8 +45,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # OpenLibCLI core
-    Core/Src/cli/cli.c
-    Core/Src/cli/utils/cli_args_parse.c
+    Core/Src/OpenLibCLI/cli.c
+    Core/Src/OpenLibCLI/utils/cli_args_parse.c
     # Serial transport
     Core/Src/cli_transport_serial.c
     # Demo setup
@@ -56,9 +56,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # OpenLibCLI core headers
-    Core/Src/cli/config
-    Core/Src/cli/utils
-    Core/Src/cli
+    Core/Src/OpenLibCLI/config
+    Core/Src/OpenLibCLI/utils
+    Core/Src/OpenLibCLI
     # Transport and demo headers
     Core/Src
 )

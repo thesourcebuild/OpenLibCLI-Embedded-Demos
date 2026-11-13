@@ -30,6 +30,21 @@
 #define CLI_TELNET_SEND_TIMEOUT_MS 5000
 #endif
 
+/* Dead-client detection (TCP keepalive): a client that sends nothing for
+ * CLI_TELNET_KEEPALIVE_IDLE_S is probed; when CLI_TELNET_KEEPALIVE_COUNT probes, sent
+ * CLI_TELNET_KEEPALIVE_INTERVAL_S apart, go unanswered (powered off, out of range, its
+ * WiFi dropped), the connection is dropped and the session ends, so the server is free for
+ * the next client. A connected client answers the probes whether or not anyone types. */
+#ifndef CLI_TELNET_KEEPALIVE_IDLE_S
+#define CLI_TELNET_KEEPALIVE_IDLE_S 60
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_INTERVAL_S
+#define CLI_TELNET_KEEPALIVE_INTERVAL_S 10
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_COUNT
+#define CLI_TELNET_KEEPALIVE_COUNT 3
+#endif
+
 /*=======================================================================================
  * Private Defines
  *=======================================================================================*/
@@ -111,6 +126,7 @@ static cli_transport_ret_t cli_telnet_transport_read(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_write(void *raw_ctx, const uint8_t *buf, cli_transport_buflen_t len);
 static cli_transport_ret_t cli_telnet_transport_flush(void *raw_ctx);
 static int cli_telnet_send_all(int fd, const uint8_t *buf, int len);
+static void cli_telnet_socket_setup(int fd);
 
 /*=======================================================================================
  * Public Functions
@@ -128,16 +144,7 @@ void cli_transport_telnet_init(cli_telnet_ctx_struct_t *ctx,
 
     if (client_fd >= 0)
     {
-      /* Disable Nagle's algorithm to reduce lag for interactive CLI */
-      int flag = 1;
-      struct timeval send_timeout;
-
-      setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-      /* send() blocks while the client's receive window is full: bound that wait, so a
-       * client that stops reading ends its session instead of stalling the device. */
-      send_timeout.tv_sec = CLI_TELNET_SEND_TIMEOUT_MS / 1000;
-      send_timeout.tv_usec = (CLI_TELNET_SEND_TIMEOUT_MS % 1000) * 1000;
-      setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+      cli_telnet_socket_setup(client_fd);
     }
 
     transport->available = cli_telnet_transport_available;
@@ -164,6 +171,11 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, int client_fd
     ctx->remote_linemode_rejected = false;
     ctx->rx_len = 0;
     ctx->rx_pos = 0;
+
+    if (client_fd >= 0)
+    {
+      cli_telnet_socket_setup(client_fd);
+    }
   }
 }
 
@@ -264,6 +276,34 @@ int8_t cli_telnet_handler(cli_telnet_ctx_struct_t *ctx)
 /*=======================================================================================
  * Private Functions
  *=======================================================================================*/
+/**
+ * @brief Set the options of a client socket: no Nagle delay, a bounded send wait and
+ *        dead-client detection.
+ * @param[in] fd Client socket.
+ */
+static void cli_telnet_socket_setup(int fd)
+{
+  int on = 1;
+  int keep_idle = CLI_TELNET_KEEPALIVE_IDLE_S;
+  int keep_interval = CLI_TELNET_KEEPALIVE_INTERVAL_S;
+  int keep_count = CLI_TELNET_KEEPALIVE_COUNT;
+  struct timeval send_timeout;
+
+  /* Disable Nagle's algorithm to reduce lag for interactive CLI */
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+  /* send() blocks while the client's receive window is full: bound that wait, so a
+   * client that stops reading ends its session instead of stalling the device. */
+  send_timeout.tv_sec = CLI_TELNET_SEND_TIMEOUT_MS / 1000;
+  send_timeout.tv_usec = (CLI_TELNET_SEND_TIMEOUT_MS % 1000) * 1000;
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+  /* A client that vanished without closing (no FIN / RST) is detected by keepalive
+   * probes; recv() then fails and the session ends. */
+  setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keep_idle, sizeof(keep_idle));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
+}
+
 /**
  * @brief Helper to cast the opaque handle back to an Arduino Client.
  * @param[in] ctx Telnet context.

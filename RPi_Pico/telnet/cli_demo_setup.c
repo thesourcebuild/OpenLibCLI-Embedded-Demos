@@ -77,7 +77,13 @@ static uint32_t s_session_id = 0;
 static cli_telnet_ctx_t s_telnet_ctx;
 static cli_transport_struct_t s_transport;
 
-static bool s_initialised = false;
+/* The client slot. cli_demo_accept() (lwIP background context) only takes a free slot;
+ * the main loop starts the session and frees the slot once the connection is closed. */
+#define CLI_DEMO_CLIENT_NONE     0U /* no client: the next connection is accepted */
+#define CLI_DEMO_CLIENT_ACCEPTED 1U /* connection attached, session not started yet */
+#define CLI_DEMO_CLIENT_SESSION  2U /* CLI session running */
+
+static volatile uint8_t s_client_state = CLI_DEMO_CLIENT_NONE;
 
 static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd,
                                cli_argc_t argc, const char *argv[]);
@@ -94,14 +100,40 @@ static int8_t cmd_add(cli_struct_t *cli, const char *cmd,
 static int8_t cmd_sub(cli_struct_t *cli, const char *cmd,
                       cli_argc_t argc, const char *argv[]);
 static void cli_register_commands(cli_struct_t *cli);
+static void cli_demo_session_start(void);
 
 static uint32_t pico_now_sec(void *ctx);
 
-void cli_demo_setup(struct tcp_pcb *client_pcb)
+bool cli_demo_accept(struct tcp_pcb *client_pcb)
+{
+  bool accepted = false;
+
+  if (s_client_state == CLI_DEMO_CLIENT_NONE)
+  {
+    cli_transport_telnet_attach(&s_telnet_ctx, client_pcb);
+    s_client_state = CLI_DEMO_CLIENT_ACCEPTED;
+    accepted = true;
+  }
+
+  return accepted;
+}
+
+bool cli_demo_client_waiting(void)
+{
+  return s_client_state == CLI_DEMO_CLIENT_ACCEPTED;
+}
+
+void cli_demo_setup(void)
+{
+  if (s_client_state == CLI_DEMO_CLIENT_ACCEPTED)
+  {
+    cli_demo_session_start();
+  }
+}
+
+static void cli_demo_session_start(void)
 {
   cli_platform_struct_t platform;
-
-  cli_demo_shutdown();
 
   CLI_LED_INIT();
 
@@ -109,7 +141,9 @@ void cli_demo_setup(struct tcp_pcb *client_pcb)
   platform.now_sec = pico_now_sec;
   platform.now_sec_ctx = NULL;
 
-  cli_transport_telnet_init(&s_telnet_ctx, &s_transport, client_pcb);
+  /* The client may already have gone (reset or closed after connecting): the first engine
+   * tick then ends the session. */
+  cli_transport_telnet_init(&s_telnet_ctx, &s_transport);
   cli_transport_telnet_negotiate(&s_telnet_ctx);
 
   cli_init(&s_cli, "Pico", &s_transport, &platform,
@@ -118,12 +152,12 @@ void cli_demo_setup(struct tcp_pcb *client_pcb)
 
   cli_set_ansi_supported(&s_cli, true);
 
-  /* 'exit' / 'quit' restart the banner and login on the same connection. One client at a
-   * time: an idle connection is closed so the next client can get in. */
+  /* 'exit' / 'quit' and the idle timeout restart the banner and login on the same
+   * connection. */
   cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
   cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
   cli_set_idle_timeout(&s_cli, 60);
-  cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
+  cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION);
   cli_set_auth_failure_mode(&s_cli, CLI_AUTH_FAILURE_MODE_LOCKOUT);
 
   s_session_id++;
@@ -147,13 +181,13 @@ void cli_demo_setup(struct tcp_pcb *client_pcb)
   cli_set_mode_name(&s_cli, CLI_MODE_CONFIG, "config");
 #endif
 
-  s_initialised = true;
+  s_client_state = CLI_DEMO_CLIENT_SESSION;
   cli_start(&s_cli);
 }
 
 void cli_demo_poll(void)
 {
-  if (s_initialised)
+  if (s_client_state == CLI_DEMO_CLIENT_SESSION)
   {
     /* Process CLI engine */
     if (cli_session_engine(&s_cli) != CLI_OK)
@@ -165,18 +199,24 @@ void cli_demo_poll(void)
 
 void cli_demo_shutdown(void)
 {
-  if (s_initialised)
+  uint8_t state = s_client_state;
+
+  if (state != CLI_DEMO_CLIENT_NONE)
   {
-    cli_done(&s_cli);
-    /* Closes the connection (also one the client already closed) and frees queued input. */
+    if (state == CLI_DEMO_CLIENT_SESSION)
+    {
+      cli_done(&s_cli);
+    }
+    /* Closes the connection (also one the client already closed) and frees queued input;
+     * only then is the slot free for the next client. */
     cli_transport_telnet_close(&s_telnet_ctx);
-    s_initialised = false;
+    s_client_state = CLI_DEMO_CLIENT_NONE;
   }
 }
 
 uint8_t cli_demo_is_running(void)
 {
-  return s_initialised ? 1U : 0U;
+  return (s_client_state == CLI_DEMO_CLIENT_SESSION) ? 1U : 0U;
 }
 
 /* ---- Command handlers ---- */

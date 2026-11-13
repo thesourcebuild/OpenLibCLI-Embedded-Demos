@@ -56,4 +56,4 @@ The CLI will negotiate telnet options (ECHO, SGA, NAWS) automatically.
 
 ## Notes
 
-The project uses the lwIP **raw TCP callback API** (not BSD sockets) because the Pico SDK's `pico_lwip_nosys` is compiled with `NO_SYS=1`, which is incompatible with the socket/sequential API. The telnet IAC state machine (ECHO, SGA, NAWS, LINEMODE) runs inside the `tcp_recv` callback. Single-client architecture: the server stops listening after one client connects.
+The project uses the lwIP **raw TCP callback API** (not BSD sockets) because the Pico SDK's `pico_lwip_nosys` is compiled with `NO_SYS=1`, which is incompatible with the socket/sequential API. The `tcp_recv` callback only queues the received data; the main loop decodes the telnet IAC sequences (ECHO, SGA, NAWS, LINEMODE) and acknowledges the data as the CLI consumes it. The server serves one client at a time: it keeps listening and refuses a second client while a session runs. `exit` / `quit` and 60 s of inactivity restart the login on the same connection.

@@ -10,6 +10,13 @@ extern "C" {
 #include "OpenLibCLI/cli.h"
 #include "lwip/tcp.h"
 
+#ifndef CLI_TELNET_RX_RING_SIZE
+/* Received bytes not yet taken by the CLI. The receive window is reopened only as the CLI
+ * takes them (tcp_recved), so the client never has more than TCP_WND bytes outstanding:
+ * a ring of that size always has room, and lwIP's packet buffers are freed on arrival. */
+#define CLI_TELNET_RX_RING_SIZE TCP_WND
+#endif
+
 typedef struct {
   struct tcp_pcb *client_pcb;
   uint8_t state;
@@ -23,19 +30,21 @@ typedef struct {
   uint8_t rx_buf[256];   /* decoded input for the CLI engine */
   uint16_t rx_len;
   uint16_t rx_pos;
-  uint8_t raw_buf[256];  /* raw bytes taken from rx_queue for decoding */
-  struct pbuf *rx_queue; /* received segments not yet decoded (lwIP lock) */
+  uint8_t raw_buf[256];  /* raw bytes taken from rx_ring for decoding */
+  uint8_t rx_ring[CLI_TELNET_RX_RING_SIZE]; /* received bytes not yet decoded (lwIP lock) */
+  tcpwnd_size_t rx_ring_head;               /* index of the oldest byte (lwIP lock) */
+  tcpwnd_size_t rx_ring_count;              /* bytes in rx_ring (lwIP lock) */
   bool peer_closed;      /* the client closed its side (lwIP lock) */
   bool started;
   bool input_started;
 } cli_telnet_ctx_t;
 
-void cli_transport_telnet_init(cli_telnet_ctx_t *ctx,
-                               cli_transport_struct_t *transport,
-                               struct tcp_pcb *client_pcb);
+/* Take a new connection: call from the tcp_accept callback (lwIP context), so the
+ * connection's callbacks are registered before lwIP can report anything for it. */
+void cli_transport_telnet_attach(cli_telnet_ctx_t *ctx, struct tcp_pcb *client_pcb);
 
-void cli_transport_telnet_set_client(cli_telnet_ctx_t *ctx,
-                                     struct tcp_pcb *client_pcb);
+/* Fill the transport vtable for the connection attached to ctx (main loop). */
+void cli_transport_telnet_init(cli_telnet_ctx_t *ctx, cli_transport_struct_t *transport);
 
 void cli_transport_telnet_negotiate(cli_telnet_ctx_t *ctx);
 

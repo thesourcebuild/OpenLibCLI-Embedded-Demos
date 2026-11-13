@@ -43,6 +43,21 @@
 #define CLI_TELNET_SEND_TIMEOUT_MS 5000U
 #endif
 
+/* Dead-client detection (TCP keepalive): a client that sends nothing for
+ * CLI_TELNET_KEEPALIVE_IDLE_MS is probed; when CLI_TELNET_KEEPALIVE_COUNT probes, sent
+ * CLI_TELNET_KEEPALIVE_INTERVAL_MS apart, go unanswered (powered off, out of range, its
+ * WiFi dropped), lwIP drops the connection and the session ends, so the server is free for
+ * the next client. A connected client answers the probes whether or not anyone types. */
+#ifndef CLI_TELNET_KEEPALIVE_IDLE_MS
+#define CLI_TELNET_KEEPALIVE_IDLE_MS 60000U
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_INTERVAL_MS
+#define CLI_TELNET_KEEPALIVE_INTERVAL_MS 10000U
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_COUNT
+#define CLI_TELNET_KEEPALIVE_COUNT 3U
+#endif
+
 /*=======================================================================================
  * Private Variables
  *=======================================================================================*/
@@ -63,6 +78,8 @@ static int telnet_send_all(cli_telnet_ctx_t *ctx, const uint8_t *buf, int len);
 static err_t telnet_output(cli_telnet_ctx_t *ctx);
 static void telnet_respond(cli_telnet_ctx_t *ctx, uint8_t verb, uint8_t opt);
 static bool telnet_process_byte(cli_telnet_ctx_t *ctx, uint8_t byte, uint8_t *out);
+static void telnet_ring_put(cli_telnet_ctx_t *ctx, const struct pbuf *p);
+static u16_t telnet_ring_take(cli_telnet_ctx_t *ctx, uint8_t *dst, u16_t max);
 static cli_transport_ret_t cli_telnet_transport_available(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_read(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_write(void *raw_ctx, const uint8_t *buf, cli_transport_buflen_t len);
@@ -76,60 +93,40 @@ static void tcp_err_cb(void *arg, err_t err);
  * Public Functions
  *=======================================================================================*/
 
-void cli_transport_telnet_init(cli_telnet_ctx_t *ctx,
-                               cli_transport_struct_t *transport,
-                               struct tcp_pcb *client_pcb)
+void cli_transport_telnet_attach(cli_telnet_ctx_t *ctx, struct tcp_pcb *client_pcb)
 {
-  if (ctx && transport) {
+  /* Runs in the tcp_accept callback (lwIP context, lock held). The callbacks are in place
+   * before lwIP processes anything else for the connection: a reset or close right after
+   * the connect is reported to this context instead of freeing a connection it still
+   * refers to, and early input is queued instead of being dropped. */
+  if (ctx && client_pcb) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->client_pcb = client_pcb;
     ctx->state = TELNET_STATE_NORMAL;
 
-    if (client_pcb) {
-      cyw43_arch_lwip_begin();
-      tcp_arg(client_pcb, ctx);
-      tcp_recv(client_pcb, tcp_recv_cb);
-      tcp_err(client_pcb, tcp_err_cb);
-      tcp_nagle_disable(client_pcb);
-      cyw43_arch_lwip_end();
-    }
+    tcp_arg(client_pcb, ctx);
+    tcp_recv(client_pcb, tcp_recv_cb);
+    tcp_err(client_pcb, tcp_err_cb);
+    tcp_nagle_disable(client_pcb);
 
+    ip_set_option(client_pcb, SOF_KEEPALIVE);
+    client_pcb->keep_idle = CLI_TELNET_KEEPALIVE_IDLE_MS;
+#if LWIP_TCP_KEEPALIVE
+    client_pcb->keep_intvl = CLI_TELNET_KEEPALIVE_INTERVAL_MS;
+    client_pcb->keep_cnt = CLI_TELNET_KEEPALIVE_COUNT;
+#endif
+  }
+}
+
+void cli_transport_telnet_init(cli_telnet_ctx_t *ctx, cli_transport_struct_t *transport)
+{
+  if (ctx && transport) {
     transport->available = cli_telnet_transport_available;
     transport->read = cli_telnet_transport_read;
     transport->write = cli_telnet_transport_write;
     transport->flush = cli_telnet_transport_flush;
     transport->ctx = ctx;
     transport->kind = CLI_TRANSPORT_TELNET;
-  }
-}
-
-void cli_transport_telnet_set_client(cli_telnet_ctx_t *ctx,
-                                     struct tcp_pcb *client_pcb)
-{
-  if (ctx) {
-    cli_transport_telnet_close(ctx); /* the previous client, and its queued input */
-    ctx->client_pcb = client_pcb;
-    ctx->state = TELNET_STATE_NORMAL;
-    ctx->verb = 0;
-    ctx->sb_len = 0;
-    ctx->negotiated = false;
-    ctx->local_echo = false;
-    ctx->local_sga = false;
-    ctx->remote_naws = false;
-    ctx->remote_linemode_rejected = false;
-    ctx->rx_len = 0;
-    ctx->rx_pos = 0;
-    ctx->started = false;
-    ctx->input_started = false;
-
-    if (client_pcb) {
-      cyw43_arch_lwip_begin();
-      tcp_arg(client_pcb, ctx);
-      tcp_recv(client_pcb, tcp_recv_cb);
-      tcp_err(client_pcb, tcp_err_cb);
-      tcp_nagle_disable(client_pcb);
-      cyw43_arch_lwip_end();
-    }
   }
 }
 
@@ -148,10 +145,7 @@ void cli_transport_telnet_close(cli_telnet_ctx_t *ctx)
       }
       ctx->client_pcb = NULL;
     }
-    if (ctx->rx_queue != NULL) {
-      pbuf_free(ctx->rx_queue);
-      ctx->rx_queue = NULL;
-    }
+    ctx->rx_ring_count = 0U;
     ctx->peer_closed = false;
     cyw43_arch_lwip_end();
   }
@@ -200,17 +194,16 @@ int8_t cli_telnet_handler(cli_telnet_ctx_t *ctx)
   } else if (ctx->rx_pos < ctx->rx_len) {
     /* Decoded input is still waiting to be read. */
   } else {
-    /* The receive callback runs in the background: the queue is shared under the lwIP lock.
-     * Only the bytes taken are acknowledged, so while the CLI is busy TCP holds the rest
-     * back (the window closes) instead of anything being dropped. */
+    /* The receive callback runs in the background: the ring is shared under the lwIP lock.
+     * Only the bytes taken reopen the receive window, so while the CLI is busy TCP holds
+     * the rest back (the window closes) instead of anything being dropped. */
     cyw43_arch_lwip_begin();
     connected = (ctx->client_pcb != NULL);
-    if (connected && ctx->rx_queue != NULL) {
-      raw_len = pbuf_copy_partial(ctx->rx_queue, ctx->raw_buf, (u16_t)sizeof(ctx->raw_buf), 0U);
-      ctx->rx_queue = pbuf_free_header(ctx->rx_queue, raw_len);
+    if (connected && ctx->rx_ring_count > 0U) {
+      raw_len = telnet_ring_take(ctx, ctx->raw_buf, (u16_t)sizeof(ctx->raw_buf));
       tcp_recved(ctx->client_pcb, raw_len);
     }
-    closed = ctx->peer_closed && ctx->rx_queue == NULL;
+    closed = ctx->peer_closed && ctx->rx_ring_count == 0U;
     cyw43_arch_lwip_end();
 
     if (!connected) {
@@ -483,9 +476,11 @@ static bool telnet_process_byte(cli_telnet_ctx_t *ctx, uint8_t byte, uint8_t *ou
 static err_t tcp_recv_cb(void *arg, struct tcp_pcb *tpcb,
                          struct pbuf *p, err_t err)
 {
-  /* Runs in lwIP's context with its lock held. The segments are queued as they are and
-   * acknowledged once cli_telnet_handler() has taken them. */
+  /* Runs in lwIP's context with its lock held. The data is copied into the ring and the
+   * packet buffers are freed at once (the pool is shared with every received frame); the
+   * window reopens once cli_telnet_handler() has taken the bytes. */
   cli_telnet_ctx_t *ctx = (cli_telnet_ctx_t *)arg;
+  err_t result = ERR_OK;
 
   (void)err;
   if (ctx == NULL) {
@@ -495,31 +490,62 @@ static err_t tcp_recv_cb(void *arg, struct tcp_pcb *tpcb,
       pbuf_free(p);
     }
   } else if (p == NULL) {
-    /* The client closed its side: reported once the queued input has been decoded; the
+    /* The client closed its side: reported once the received input has been decoded; the
      * connection itself is closed by cli_transport_telnet_close(). */
     ctx->peer_closed = true;
-  } else if (ctx->rx_queue == NULL) {
-    ctx->rx_queue = p;
+  } else if (p->tot_len > (tcpwnd_size_t)(CLI_TELNET_RX_RING_SIZE - ctx->rx_ring_count)) {
+    /* More than the window the ring was sized for (CLI_TELNET_RX_RING_SIZE set below
+     * TCP_WND): refused, lwIP keeps the data and delivers it again later. */
+    result = ERR_MEM;
   } else {
-    pbuf_cat(ctx->rx_queue, p);
+    telnet_ring_put(ctx, p);
+    pbuf_free(p);
   }
 
-  return ERR_OK;
+  return result;
 }
 
 static void tcp_err_cb(void *arg, err_t err)
 {
-  /* The connection was reset or failed and lwIP has already freed it. */
+  /* The connection was reset or failed (also a client that stopped answering keepalive
+   * probes) and lwIP has already freed it. */
   cli_telnet_ctx_t *ctx = (cli_telnet_ctx_t *)arg;
 
   (void)err;
   if (ctx) {
     ctx->client_pcb = NULL;
-    if (ctx->rx_queue != NULL) {
-      pbuf_free(ctx->rx_queue);
-      ctx->rx_queue = NULL;
-    }
+    ctx->rx_ring_count = 0U;
   }
+}
+
+/** @brief Append all of @p p to the receive ring (the caller checked that it fits). */
+static void telnet_ring_put(cli_telnet_ctx_t *ctx, const struct pbuf *p)
+{
+  tcpwnd_size_t tail = (tcpwnd_size_t)((ctx->rx_ring_head + ctx->rx_ring_count) %
+                                       CLI_TELNET_RX_RING_SIZE);
+  u16_t to_end = (u16_t)(CLI_TELNET_RX_RING_SIZE - tail);
+  u16_t first = (p->tot_len < to_end) ? p->tot_len : to_end;
+
+  (void)pbuf_copy_partial(p, &ctx->rx_ring[tail], first, 0U);
+  if (first < p->tot_len) {
+    /* The rest wraps around to the start of the ring. */
+    (void)pbuf_copy_partial(p, ctx->rx_ring, (u16_t)(p->tot_len - first), first);
+  }
+  ctx->rx_ring_count = (tcpwnd_size_t)(ctx->rx_ring_count + p->tot_len);
+}
+
+/** @brief Move up to @p max of the oldest bytes of the receive ring to @p dst. */
+static u16_t telnet_ring_take(cli_telnet_ctx_t *ctx, uint8_t *dst, u16_t max)
+{
+  u16_t taken = (ctx->rx_ring_count < max) ? (u16_t)ctx->rx_ring_count : max;
+
+  for (u16_t i = 0U; i < taken; i++) {
+    dst[i] = ctx->rx_ring[ctx->rx_ring_head];
+    ctx->rx_ring_head = (tcpwnd_size_t)((ctx->rx_ring_head + 1U) % CLI_TELNET_RX_RING_SIZE);
+  }
+  ctx->rx_ring_count = (tcpwnd_size_t)(ctx->rx_ring_count - taken);
+
+  return taken;
 }
 
 static cli_transport_ret_t cli_telnet_transport_available(void *raw_ctx)

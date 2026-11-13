@@ -19,6 +19,9 @@
 #include <string.h>
 
 #include <WiFi.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <lwip/sockets.h> /* keepalive socket options */
+#endif
 
 //>! UNCOMMENT:: If you want to use your own configuration 'cli_config' present in your sketch dir.
 // Note: The use of "" instead of <> 
@@ -34,7 +37,7 @@
  * Private Defines
  *=======================================================================================*/
 #ifndef CLI_MAX_COMMANDS
-#define CLI_MAX_COMMANDS 12
+#define CLI_MAX_COMMANDS 13 /* every command below, 'clear' included (ANSI terminals) */
 #endif
 
 /** Uncomment exactly one: */
@@ -67,6 +70,21 @@
 
 #ifndef CLI_TELNET_PORT
 #define CLI_TELNET_PORT 2323U
+#endif
+
+/* Dead-client detection (TCP keepalive): a client that sends nothing for
+ * CLI_TELNET_KEEPALIVE_IDLE_S is probed; when CLI_TELNET_KEEPALIVE_COUNT probes, sent
+ * CLI_TELNET_KEEPALIVE_INTERVAL_S apart, go unanswered (powered off, out of range, its
+ * WiFi dropped), the connection is dropped and the session ends, so the server is free for
+ * the next client. A connected client answers the probes whether or not anyone types. */
+#ifndef CLI_TELNET_KEEPALIVE_IDLE_S
+#define CLI_TELNET_KEEPALIVE_IDLE_S 60
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_INTERVAL_S
+#define CLI_TELNET_KEEPALIVE_INTERVAL_S 10
+#endif
+#ifndef CLI_TELNET_KEEPALIVE_COUNT
+#define CLI_TELNET_KEEPALIVE_COUNT 3
 #endif
 
 #define CLI_WIFI_CONNECT_TIMEOUT_MS 15000UL
@@ -139,6 +157,7 @@ static void cli_register_commands(cli_struct_t *cli);
 static void cli_telnet_demo_setup(void *client_handle);
 static void cli_telnet_poll(void);
 static void cli_telnet_demo_shutdown(void);
+static void telnet_client_keepalive(WiFiClient &client);
 
 static uint32_t arduino_now_sec(void *ctx);
 #if CLI_ENABLE_TIMMING_STATS
@@ -179,7 +198,8 @@ void loop(void) {
 
   /* Without WiFi the server was never started: there is nothing to accept or serve. */
   if (s_server_started) {
-#if defined(ARDUINO_ARCH_RP2040)
+    /* accept() on the cores that have it (ESP32 core 3 deprecates available() for it). */
+#if defined(ARDUINO_ARCH_RP2040) || (defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
     incoming = s_telnet_server.accept();
 #else
     incoming = s_telnet_server.available();
@@ -192,6 +212,7 @@ void loop(void) {
       }
 
       s_telnet_client = incoming;
+      telnet_client_keepalive(s_telnet_client);
       s_client_active = true;
       cli_telnet_demo_setup(&s_telnet_client);
 
@@ -204,7 +225,7 @@ void loop(void) {
 
   if (s_client_active) {
     /* Ends the session (and the connection) when the client went away or the session
-     * closed itself ('quit', idle timeout, failed logins). */
+     * stopped itself (failed logins). */
     cli_telnet_poll();
 
 #if CLI_ENABLE_TIMMING_STATS
@@ -416,7 +437,9 @@ static void cli_register_commands(cli_struct_t *cli) {
 
   cli_register_command(cli, CLI_CMD_ROOT, "exit", cli_cmd_builtin_exit, CLI_PRIV_USER, CLI_MODE_ANY,
                   "Exit");
-				  
+  cli_register_command(cli, CLI_CMD_ROOT, "quit", cli_cmd_builtin_quit, CLI_PRIV_USER, CLI_MODE_ANY,
+                  "Quit");
+
   cli_register_command(cli, CLI_CMD_ROOT, "help", cli_cmd_builtin_help, CLI_PRIV_USER, CLI_MODE_ANY,
                   "Help");
 #if CLI_ENABLE_HISTORY
@@ -476,12 +499,12 @@ static void cli_telnet_demo_setup(void *client_handle) {
 	// Uncomment the below line
 	cli_set_ansi_supported(&s_cli, false);
 	  
-    /* One client at a time: 'exit' / 'quit' and an idle timeout end the connection so the
-     * next client can get in (a serial port, which cannot reconnect, restarts instead). */
-    cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_CLOSE_SESSION);
-    cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_CLOSE_SESSION);
+    /* 'exit' / 'quit' and the idle timeout restart the banner and login on the same
+     * connection. */
+    cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
+    cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
     cli_set_idle_timeout(&s_cli, 60);
-    cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
+    cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION);
 
     s_session_id++;
     memset(&s_app, 0, sizeof(s_app));
@@ -528,6 +551,30 @@ static void cli_telnet_demo_shutdown(void) {
   s_telnet_client.stop();
   s_client_active = false;
   Serial.println("Telnet session ended.");
+}
+
+/**
+ * @brief Enable dead-client detection on @p client: a client that vanished without
+ *        closing then reads as disconnected and its session ends (cli_telnet_poll()).
+ *        Cores without a keepalive API leave the connection as it is.
+ */
+static void telnet_client_keepalive(WiFiClient &client) {
+#if defined(ARDUINO_ARCH_RP2040)
+  client.keepAlive(CLI_TELNET_KEEPALIVE_IDLE_S, CLI_TELNET_KEEPALIVE_INTERVAL_S,
+                   CLI_TELNET_KEEPALIVE_COUNT);
+#elif defined(ARDUINO_ARCH_ESP32)
+  int on = 1;
+  int keep_idle = CLI_TELNET_KEEPALIVE_IDLE_S;
+  int keep_interval = CLI_TELNET_KEEPALIVE_INTERVAL_S;
+  int keep_count = CLI_TELNET_KEEPALIVE_COUNT;
+
+  (void)client.setSocketOption(SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+  (void)client.setSocketOption(IPPROTO_TCP, TCP_KEEPIDLE, &keep_idle, sizeof(keep_idle));
+  (void)client.setSocketOption(IPPROTO_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
+  (void)client.setSocketOption(IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
+#else
+  (void)client;
+#endif
 }
 
 static uint32_t arduino_now_sec(void *ctx) {

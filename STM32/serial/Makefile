@@ -54,8 +54,8 @@ Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_exti.c \
 Core/Src/system_stm32f1xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c \
-Core/Src/cli/cli.c \
-Core/Src/cli/cli_utils.c \
+Core/Src/OpenLibCLI/cli.c \
+Core/Src/OpenLibCLI/utils/cli_args_parse.c \
 Core/Src/cli_transport_serial.c \
 Core/Src/cli_demo_setup.c  
 
@@ -123,9 +123,9 @@ C_INCLUDES =  \
 -IDrivers/STM32F1xx_HAL_Driver/Inc/Legacy \
 -IDrivers/CMSIS/Device/ST/STM32F1xx/Include \
 -IDrivers/CMSIS/Include \
--ICore/Src/cli/config \
--ICore/Src/cli/utils \
--ICore/Src/cli \
+-ICore/Src/OpenLibCLI/config \
+-ICore/Src/OpenLibCLI/utils \
+-ICore/Src/OpenLibCLI \
 -ICore/Src
 
 

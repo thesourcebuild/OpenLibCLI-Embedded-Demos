@@ -834,6 +834,10 @@ struct cli_s {
   uint32_t filter_count;                  /**< Line count accumulated by the @c count filter
                                              (32-bit: an int may have only 16). */
   bool filter_begin_found;                /**< True once the begin-pattern has been seen. */
+  bool filter_line_cont;                  /**< The next piece continues a line longer than
+                                             the line buffer (not a line of its own). */
+  bool filter_line_match;                 /**< A piece of the current line contained the
+                                             grep / exclude pattern. */
 #endif                                    /* CLI_ENABLE_PIPE_FILTER */
 
 #if CLI_HAS_LINE_BUFFER
@@ -1267,13 +1271,15 @@ OPENLIBCLI_API int8_t cli_clear_history(cli_struct_t *cli);
  * @brief Check the idle timeout once; call periodically in non-blocking
  * integrations.
  *
- * Nothing happens during an authentication lockout: it ends by itself, and the
- * idle period starts again then.
+ * Only a running session times out: before @c cli_start() has shown the prompt,
+ * and after the session has stopped, nothing happens. Nothing happens during an
+ * authentication lockout either: it ends by itself, and the idle period starts
+ * again then.
  *
  * @param[in] cli  Active CLI session.
  *
- * @return @c CLI_OK if the session is still active, negative if the timeout
- * fired.
+ * @return @c CLI_OK if the session is still active (or not running), negative if
+ * the timeout fired.
  */
 OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli);
 

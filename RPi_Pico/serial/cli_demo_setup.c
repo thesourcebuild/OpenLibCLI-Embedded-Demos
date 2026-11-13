@@ -139,7 +139,9 @@ void cli_demo_poll(void)
 {
   if (cli_session_engine(&s_cli) != CLI_OK)
   {
-    cli_demo_shutdown();
+    /* A serial line cannot reconnect: a session that ended (e.g. after failed logins)
+     * starts again with the banner and login. */
+    cli_start(&s_cli);
   }
 }
 
@@ -314,6 +316,8 @@ static void cli_register_commands(cli_struct_t *cli)
 
   cli_register_command(cli, CLI_CMD_ROOT, "exit", cli_cmd_builtin_exit, CLI_PRIV_USER, CLI_MODE_ANY,
                        "Exit Context");
+  cli_register_command(cli, CLI_CMD_ROOT, "quit", cli_cmd_builtin_quit, CLI_PRIV_USER, CLI_MODE_ANY,
+                       "Quit Session");
 
   cli_register_command(cli, CLI_CMD_ROOT, "help", cli_cmd_builtin_help, CLI_PRIV_USER, CLI_MODE_ANY,
                        "Show commands");

@@ -97,10 +97,12 @@
 /* VT100 / ANSI Escape Parser States ----------------------------------------------------*/
 #define ESC_STATE_NORMAL     (uint8_t)0 /**< No active escape sequence. */
 #define ESC_STATE_ESC        (uint8_t)1 /**< Received ESC (0x1B); awaiting '[' or 'O'. */
-#define ESC_STATE_CSI        (uint8_t)2 /**< ESC '[': accumulating the first numeric parameter. */
+#define ESC_STATE_CSI        (uint8_t)2 /**< ESC '[': no parameter byte received yet. */
 #define ESC_STATE_CSI_REST   (uint8_t)3 /**< CSI after the first parameter (e.g. ";5" modifier). */
 #define ESC_STATE_CSI_IGNORE (uint8_t)4 /**< CSI with private / intermediate bytes; dropped. */
-#define ESC_STATE_SS3        (uint8_t)5 /**< ESC 'O' (SS3): the next byte is the key code. */
+#define ESC_STATE_SS3        (uint8_t)5 /**< ESC 'O' (SS3): modifier digits, then the key code. */
+#define ESC_STATE_CSI_PARAM  (uint8_t)6 /**< CSI: accumulating the first numeric parameter. */
+#define ESC_STATE_CSI_FKEY   (uint8_t)7 /**< ESC '[' '[': Linux console F1-F5; key code next. */
 
 #define ESC_PARAM_MAX 9999 /**< Saturation limit for the accumulated CSI parameter. */
 
@@ -260,7 +262,7 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli);
 
 #if CLI_HAS_LINE_BUFFER
 static void cli_print_emit(cli_struct_t *cli, const char *line);
-static void cli_line_buffer_emit(cli_struct_t *cli);
+static void cli_line_buffer_emit(cli_struct_t *cli, bool line_continues);
 #endif
 static void cli_print_process_stream(cli_struct_t *cli, const char *data, int len);
 static void cli_output_end_line(cli_struct_t *cli);
@@ -377,7 +379,8 @@ static cli_cmd_handle_t cli_first_word_parent(cli_struct_t *cli, const char *wor
 static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
                              cli_cmd_handle_t *parent, bool *args);
 static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli);
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before);
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before,
+                                cli_priv_t priv_before);
 static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli);
 
 /* Tab Completion -----------------------------------------------------------------------*/
@@ -1296,7 +1299,7 @@ OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
        * Inside a command, its output is finished when it returns (cli_command_end()). */
 #if CLI_HAS_LINE_BUFFER
       if (cli->filter_line_buf_len > 0) {
-        cli_line_buffer_emit(cli);
+        cli_line_buffer_emit(cli, False);
       }
 #endif
       CLI_WSTR(cli, CLI_CRLF);
@@ -1582,8 +1585,10 @@ OPENLIBCLI_API int8_t cli_check_idle_timeout(cli_struct_t *cli) {
   /* A registered callback always owns the expiry; the policy applies only without one.
    * Closing runs from the start of the session (a connection nobody uses is closed), but a
    * reset only makes sense once the user has typed something: a freshly started or just
-   * reset session is already in the state a reset would produce. */
-  if (cli != NULL && cli->idle_timeout != 0UL && cli->time_source != NULL) {
+   * reset session is already in the state a reset would produce. Only a running session
+   * times out: one that is stopped, or not started yet, has no user to wait for. */
+  if (cli != NULL && cli->idle_timeout != 0UL && cli->time_source != NULL &&
+      cli->session_state == CLI_SESSION_RUN) {
     bool check_timeout =
         (cli->idle_timeout_cb != NULL ||
          cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_CLOSE ||
@@ -2263,7 +2268,7 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...) {
 OPENLIBCLI_API void cli_print_flush(cli_struct_t *cli) {
 #if CLI_HAS_LINE_BUFFER
   if (cli != NULL && cli->filter_line_buf_len > 0) {
-    cli_line_buffer_emit(cli);
+    cli_line_buffer_emit(cli, False);
   }
 #else
   (void)cli;
@@ -2797,12 +2802,19 @@ static void cli_print_emit(cli_struct_t *cli, const char *line) {
 
 /**
  * @brief Emit the buffered output text as one line and empty the buffer.
- * @param[in] cli  Active CLI session.
+ * @param[in] cli             Active CLI session.
+ * @param[in] line_continues  @c true when the buffer is full and the line goes on: the
+ *                            text that follows is the rest of this line for the filter.
  */
-static void cli_line_buffer_emit(cli_struct_t *cli) {
+static void cli_line_buffer_emit(cli_struct_t *cli, bool line_continues) {
   cli->filter_line_buf[cli->filter_line_buf_len] = '\0';
   cli->filter_line_buf_len = 0;
   cli_print_emit(cli, cli->filter_line_buf);
+#if CLI_ENABLE_PIPE_FILTER
+  cli->filter_line_cont = line_continues;
+#else
+  (void)line_continues;
+#endif
 }
 #endif
 
@@ -2836,10 +2848,10 @@ static void cli_print_process_stream(cli_struct_t *cli, const char *data, int le
       char c = data[i];
 
       if (c == '\n') {
-        cli_line_buffer_emit(cli);
+        cli_line_buffer_emit(cli, False);
       } else if (c != '\r') {
         if (cli->filter_line_buf_len >= (int)CLI_MAX_OUTPUT_BUF - 1) {
-          cli_line_buffer_emit(cli); /* buffer full: deliver this piece, keep going */
+          cli_line_buffer_emit(cli, True); /* buffer full: deliver this piece, keep going */
         }
         cli->filter_line_buf[cli->filter_line_buf_len++] = c;
       } else {
@@ -2866,7 +2878,7 @@ static void cli_print_process_stream(cli_struct_t *cli, const char *data, int le
 static void cli_output_end_line(cli_struct_t *cli) {
 #if CLI_HAS_LINE_BUFFER
   if (cli->filter_line_buf_len > 0) {
-    cli_line_buffer_emit(cli);
+    cli_line_buffer_emit(cli, False);
   }
 #endif
   if (cli->out_open) {
@@ -3984,15 +3996,19 @@ static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli) {
  *
  * If the callback already pushed a navigation level (e.g. by switching mode via
  * @c cli_set_mode), that level records where @c exit must return to and is
- * reused; otherwise the current mode and context are pushed first.
+ * reused; otherwise the current mode and context are pushed first. Either way
+ * the level restores the privilege held before the command ran: one the
+ * callback granted for the submenu ends when the submenu is left.
  *
  * @param[in] cli           Active CLI session.
  * @param[in] node          Submenu node to enter.
  * @param[in] depth_before  @c nav_depth before the callback ran.
+ * @param[in] priv_before   Privilege before the callback ran.
  *
  * @return @c CLI_OK, or @c CLI_ERR_NOMEM when the navigation stack is full.
  */
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before) {
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before,
+                                cli_priv_t priv_before) {
   int8_t rc = CLI_OK;
 
   if (cli->context != node) {
@@ -4000,6 +4016,10 @@ static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_
       rc = cli_nav_push(cli);
     }
     if (rc == CLI_OK) {
+      if (cli->nav_depth > depth_before) {
+        /* The level this command created (not one it returned to). */
+        cli->nav_stack[depth_before].privilege = priv_before;
+      }
       cli->context = node;
     }
   }
@@ -4316,13 +4336,20 @@ static void cli_filter_reset(cli_struct_t *cli) {
   cli->filter_pattern[0] = '\0';
   cli->filter_count = 0U;
   cli->filter_begin_found = False;
+  cli->filter_line_cont = False;
+  cli->filter_line_match = False;
 }
 
 /**
  * @brief Decide whether @p line should be emitted given the active filter.
  *
+ * A line longer than the line buffer arrives in pieces (@c filter_line_cont). It is
+ * counted once, and once a piece has contained the grep / exclude pattern, the rest of
+ * that line is shown / hidden with it. A piece emitted before the pattern appears has
+ * already been decided.
+ *
  * @param[in] cli   Active CLI session.
- * @param[in] line  NUL-terminated output line to test.
+ * @param[in] line  NUL-terminated output line (or piece of one) to test.
  *
  * @return @c true if the line should be shown, @c false if it should be
  * suppressed.
@@ -4330,16 +4357,26 @@ static void cli_filter_reset(cli_struct_t *cli) {
 static bool cli_filter_line(cli_struct_t *cli, const char *line) {
   bool result = True;
 
+  if (!cli->filter_line_cont) {
+    cli->filter_line_match = False; /* a new line */
+  }
+
   switch (cli->filter_type) {
   case CLI_FILTER_NONE:
     break;
 
   case CLI_FILTER_GREP:
-    result = (strstr(line, cli->filter_pattern) != NULL);
+    if (strstr(line, cli->filter_pattern) != NULL) {
+      cli->filter_line_match = True;
+    }
+    result = cli->filter_line_match;
     break;
 
   case CLI_FILTER_EXCLUDE:
-    result = (strstr(line, cli->filter_pattern) == NULL);
+    if (strstr(line, cli->filter_pattern) != NULL) {
+      cli->filter_line_match = True;
+    }
+    result = !cli->filter_line_match;
     break;
 
   case CLI_FILTER_BEGIN:
@@ -4352,7 +4389,7 @@ static bool cli_filter_line(cli_struct_t *cli, const char *line) {
     break;
 
   case CLI_FILTER_COUNT:
-    if (cli->filter_count < UINT32_MAX) {
+    if (!cli->filter_line_cont && cli->filter_count < UINT32_MAX) {
       cli->filter_count++; /* saturates rather than wrapping to a small count */
     }
     result = False; /* accumulate, print in flush */
@@ -4954,6 +4991,7 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
         if (cmd->callback != NULL) {
           cli_argc_t rem_argc = argc - depth;
           uint8_t depth_before = cli->nav_depth;
+          cli_priv_t priv_before = cli->privilege;
           cli_session_state_enum_t state_before = cli->session_state;
           rc = cmd->callback(cli, cmd->name, rem_argc, &argv[depth]);
 
@@ -4963,7 +5001,7 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
            * callback, in which case navigation is left alone. */
           if (rc == CLI_OK && rem_argc == 1 && cli->session_state == state_before &&
               cli_handle_valid(cli, h) && cli_cmd_has_children(cli, h)) {
-            if (cli_context_enter(cli, h, depth_before) != CLI_OK) {
+            if (cli_context_enter(cli, h, depth_before, priv_before) != CLI_OK) {
               CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
               rc = CLI_ERR_NOMEM;
             }
@@ -5091,7 +5129,7 @@ static bool cli_command_begin(cli_struct_t *cli) {
   if (outermost && cli->filter_line_buf_len > 0) {
     /* A partial line printed outside any command (a callback) is a line of its own, not the
      * start of this command's output or input to its filter. */
-    cli_line_buffer_emit(cli);
+    cli_line_buffer_emit(cli, False);
   }
 #endif
   cli->exec_depth++;
@@ -5906,8 +5944,10 @@ static void cli_auth_insert_char(cli_struct_t *cli, char c) {
  * 0x20-0x2F, final byte 0x40-0x7E. Only the first numeric parameter is kept;
  * extra parameters such as the @c ;5 modifier of Ctrl+Arrow are consumed and
  * ignored. Sequences with private markers (@c < @c = @c > @c ?) or
- * intermediate bytes are consumed without action. A control byte inside a
- * sequence aborts it and is processed normally.
+ * intermediate bytes are consumed without action. An SS3 sequence may carry
+ * modifier digits before its key code (@c ESC O 2 P); the Linux console's
+ * F1-F5 (@c ESC [ [ A .. @c E) are consumed without action. A control byte
+ * inside a sequence aborts it and is processed normally.
  *
  * For example: Up Arrow sends: 0x1B (ESC), then [, then A often read as \033[A
  *
@@ -5949,10 +5989,16 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
     break;
 
   case ESC_STATE_CSI:
+  case ESC_STATE_CSI_PARAM:
   case ESC_STATE_CSI_REST:
   case ESC_STATE_CSI_IGNORE:
-    if (b >= ASCII_DIGIT_0 && b <= ASCII_DIGIT_9 && cli->esc_state == ESC_STATE_CSI) {
+    if (b == ASCII_LSBRACKET && cli->esc_state == ESC_STATE_CSI) {
+      /* ESC [ [ A .. ESC [ [ E: F1-F5 of the Linux console. */
+      cli->esc_state = ESC_STATE_CSI_FKEY;
+    } else if (b >= ASCII_DIGIT_0 && b <= ASCII_DIGIT_9 &&
+               (cli->esc_state == ESC_STATE_CSI || cli->esc_state == ESC_STATE_CSI_PARAM)) {
       int digit = b - ASCII_DIGIT_0;
+      cli->esc_state = ESC_STATE_CSI_PARAM;
       /* Saturate before multiplying: 9999 * 10 does not fit a 16-bit int (AVR). */
       if (cli->esc_param <= (ESC_PARAM_MAX - digit) / 10) {
         cli->esc_param = cli->esc_param * 10 + digit;
@@ -5961,7 +6007,7 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
       }
     } else if (is_param) {
       if (b == ';' || b == ':') {
-        if (cli->esc_state == ESC_STATE_CSI) {
+        if (cli->esc_state == ESC_STATE_CSI || cli->esc_state == ESC_STATE_CSI_PARAM) {
           cli->esc_state = ESC_STATE_CSI_REST; /* further parameters are ignored */
         }
       } else if (b >= '<') {
@@ -5989,9 +6035,13 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
     break;
 
   case ESC_STATE_SS3:
+  case ESC_STATE_CSI_FKEY:
     cli->esc_param = 0;
-    if (is_final) {
-      if (dispatch) {
+    if (is_param && cli->esc_state == ESC_STATE_SS3) {
+      /* Modifier digits (ESC O 2 P: Shift+F1 on some terminals): ignored, the key follows. */
+    } else if (is_final) {
+      /* The Linux console's F1-F5 have no editing action. */
+      if (dispatch && cli->esc_state == ESC_STATE_SS3) {
         handle_csi(cli, (char)b);
       }
       cli->esc_state = ESC_STATE_NORMAL;

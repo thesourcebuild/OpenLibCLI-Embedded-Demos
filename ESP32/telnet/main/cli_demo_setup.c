@@ -111,12 +111,12 @@ void cli_demo_setup(int client_fd)
   cli_register_commands(&s_cli);
 
   cli_set_ansi_supported(&s_cli, true);
-  /* 'exit' / 'quit' restart the banner and login on the same connection. One client at a
-   * time: an idle connection is closed so the next client can get in. */
+  /* 'exit' / 'quit' and the idle timeout restart the banner and login on the same
+   * connection. */
   cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
   cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
   cli_set_idle_timeout(&s_cli, 60);
-  cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_CLOSE);
+  cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION);
 
   s_session_id++;
   memset(&s_app, 0, sizeof(s_app));

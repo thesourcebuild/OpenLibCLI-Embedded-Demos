@@ -37,7 +37,7 @@
  * Private Defines
  *=======================================================================================*/
 #ifndef CLI_MAX_COMMANDS
-#define CLI_MAX_COMMANDS 12
+#define CLI_MAX_COMMANDS 13 /* every command below, 'clear' included (ANSI terminals) */
 #endif
 
 /** Uncomment exactly one: */
@@ -138,32 +138,32 @@ void setup(void) {
 
   uint32_t t0 = (uint32_t)millis();
   while (!Serial && (millis() - t0) < USB_WAIT_MS) {
-    ;
+    delay(10); /* lets the core run (watchdog) while USB enumerates */
   }
 
   cli_serial_setup();
 }
 
 /**
- * @brief Poll the CLI session forever from the Arduino super-loop.
+ * @brief Poll the CLI session once per pass of the Arduino super-loop.
  *
- * The CLI engine is non-blocking in this demo, so each iteration services any
- * available serial input and optionally prints timing statistics.
+ * The CLI engine is non-blocking in this demo, so each pass services any
+ * available serial input and optionally prints timing statistics. Returning
+ * lets the core run its own work between passes (e.g. the ESP8266 WiFi stack
+ * and software watchdog, serialEvent()).
  */
 void loop(void) {
-  uint32_t last_print_ms = 0;
-  uint32_t now_ms = (uint32_t)millis();
+  static uint32_t last_print_ms = 0;
+  uint32_t now_ms;
 
-  while (1) {
-    cli_serial_poll();
+  cli_serial_poll();
 
-    now_ms = (uint32_t)millis();
-    if ((now_ms - last_print_ms) >= CLI_STATS_PERIOD_MS) {
+  now_ms = (uint32_t)millis();
+  if ((now_ms - last_print_ms) >= CLI_STATS_PERIOD_MS) {
 #if CLI_ENABLE_TIMMING_STATS
-      arduino_print_tick_stats();
+    arduino_print_tick_stats();
 #endif
-      last_print_ms = now_ms;
-    }
+    last_print_ms = now_ms;
   }
 }
 
@@ -314,7 +314,9 @@ static void cli_register_commands(cli_struct_t *cli) {
 
   cli_register_command(cli, CLI_CMD_ROOT, "exit", cli_cmd_builtin_exit, CLI_PRIV_USER, CLI_MODE_ANY,
                   "Exit");
-				  
+  cli_register_command(cli, CLI_CMD_ROOT, "quit", cli_cmd_builtin_quit, CLI_PRIV_USER, CLI_MODE_ANY,
+                  "Quit");
+
   cli_register_command(cli, CLI_CMD_ROOT, "help", cli_cmd_builtin_help, CLI_PRIV_USER, CLI_MODE_ANY,
                   "Help");
 #if CLI_ENABLE_HISTORY
@@ -406,7 +408,9 @@ static void cli_serial_setup(void) {
 
 static void cli_serial_poll(void) {
   if (cli_session_engine(&s_cli) != CLI_OK) {
-    cli_done(&s_cli);
+    /* A serial line cannot reconnect: a session that ended (e.g. after failed logins)
+     * starts again with the banner and login. */
+    cli_start(&s_cli);
   }
 }
 
