@@ -26,7 +26,11 @@
  * Private Defines
  *=======================================================================================*/
 
-/* No private constants. */
+#ifndef CLI_SERIAL_HOST_CHECK_MS
+/* How often the port's host state is read: on some cores the query itself waits (the
+ * ATmega32U4 USB core's Serial_::operator bool() spends 10 ms in delay()). */
+#define CLI_SERIAL_HOST_CHECK_MS 250UL
+#endif
 
 /*=======================================================================================
  * Private Macros
@@ -50,7 +54,10 @@
  * Private Variables
  *=======================================================================================*/
 
-/* No private file-scope variables. */
+/* Whether a terminal holds the port open, as last seen: native-USB boards report a
+ * terminal opening or closing the port (DTR); a UART always reads as open. */
+static bool s_host;
+static uint32_t s_host_checked_ms;
 
 /*=======================================================================================
  * Private Function Prototypes
@@ -74,6 +81,9 @@ void cli_transport_serial_init(cli_transport_struct_t *transport) {
     transport->read = arduino_serial_read;
     transport->write = arduino_serial_write;
     transport->flush = arduino_serial_flush;
+
+    s_host = (bool)Serial;
+    s_host_checked_ms = (uint32_t)millis();
   }
 }
 
@@ -82,8 +92,28 @@ void cli_transport_serial_init(cli_transport_struct_t *transport) {
  *=======================================================================================*/
 
 static cli_transport_ret_t arduino_serial_available(void *ctx) {
+  cli_transport_ret_t result = 0;
+  bool host_changed = false;
+  uint32_t now_ms = (uint32_t)millis();
+
   (void)ctx;
-  return (Serial.available() > 0) ? 1 : 0;
+  if ((uint32_t)(now_ms - s_host_checked_ms) >= CLI_SERIAL_HOST_CHECK_MS) {
+    bool host = (bool)Serial;
+
+    s_host_checked_ms = now_ms;
+    host_changed = (host != s_host);
+    s_host = host;
+  }
+
+  if (host_changed) {
+    /* A terminal closed or opened the port: the session ends, so the next terminal starts
+     * at the banner and login instead of inside the previous user's session. */
+    result = CLI_ERR;
+  } else {
+    result = (Serial.available() > 0) ? 1 : 0;
+  }
+
+  return result;
 }
 
 static cli_transport_ret_t arduino_serial_read(void *ctx) {

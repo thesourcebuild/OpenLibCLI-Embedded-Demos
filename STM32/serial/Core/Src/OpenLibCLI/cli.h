@@ -706,6 +706,11 @@ struct cli_s {
   cli_nav_frame_struct_t nav_stack[CLI_MAX_CONTEXT_DEPTH]; /**< Saved mode/context levels;
                                                               empty at the login floor. */
   uint8_t nav_depth; /**< Number of valid entries in @c nav_stack[]. */
+  uint8_t nav_floor; /**< While a command runs: the lowest @c nav_depth it reached (it
+                        may return to an enclosing level through @c cli_set_mode()). */
+  cli_priv_t nav_floor_priv; /**< Privilege in effect at @c nav_floor when it was
+                                reached: what leaving a submenu the command enters
+                                returns to. */
 
   /* --- hostname / prompt
    * ----------------------------------------------------------- */

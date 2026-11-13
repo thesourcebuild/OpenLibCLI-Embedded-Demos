@@ -369,18 +369,18 @@ static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t
 static void cli_foreach_match(cli_struct_t *cli, const char *prefix, cli_cmd_handle_t parent,
                               bool with_root, cli_match_cb_t cb, void *ctx);
 static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent,
-                              cli_cmd_handle_t *out);
+                              cli_cmd_handle_t shadow, cli_cmd_handle_t *out);
 static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent);
 static bool cli_cmd_has_children(const cli_struct_t *cli, cli_cmd_handle_t parent);
 #if CLI_ENABLE_ALIASES
 static bool cli_cmd_has_registered_children(const cli_struct_t *cli, cli_cmd_handle_t parent);
 #endif
-static cli_cmd_handle_t cli_first_word_parent(cli_struct_t *cli, const char *word);
+static int8_t cli_resolve_first(cli_struct_t *cli, const char *word, cli_cmd_handle_t *out);
+static bool cli_keyword_shadowed(cli_struct_t *cli, const char *keyword, cli_cmd_handle_t shadow);
 static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
                              cli_cmd_handle_t *parent, bool *args);
 static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli);
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before,
-                                cli_priv_t priv_before);
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node);
 static cli_cmd_handle_t cli_menu_context_parent(const cli_struct_t *cli);
 
 /* Tab Completion -----------------------------------------------------------------------*/
@@ -395,6 +395,8 @@ static bool cli_complete_cb(cli_struct_t *cli, cli_cmd_handle_t h, const char *t
 
 static void cli_show_help(cli_struct_t *cli);
 static void cli_show_help_words(cli_struct_t *cli, char *scratch);
+static void cli_help_complete_line(cli_struct_t *cli, cli_cmd_handle_t node, bool listed,
+                                   bool as_output);
 
 /* Output Filter (Pipe Processing) ------------------------------------------------------*/
 
@@ -419,8 +421,7 @@ static void cli_after_command(cli_struct_t *cli, int8_t exec_rc, int8_t *rc);
 
 static bool cli_eol_pair(cli_struct_t *cli, int byte);
 
-static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc,
-                                  cli_argc_t depth, cli_cmd_handle_t parent);
+static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc);
 static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive);
 static bool cli_command_begin(cli_struct_t *cli);
 static void cli_command_end(cli_struct_t *cli, bool outermost);
@@ -795,10 +796,8 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
     if (argc > 1) {
       cli_cmd_handle_t h;
       for (cli_argc_t i = 1; i < argc && rc == CLI_OK; i++) {
-        if (i == 1) {
-          parent = cli_first_word_parent(cli, argv[1]); /* same lookup as execution */
-        }
-        int8_t r = cli_resolve_one(cli, argv[i], parent, &h);
+        int8_t r = (i == 1) ? cli_resolve_first(cli, argv[1], &h) /* same lookup as execution */
+                            : cli_resolve_one(cli, argv[i], parent, CLI_CMD_INVALID, &h);
         if (r == CLI_OK) {
           parent = h;
         } else if (r == CLI_ERR) {
@@ -814,8 +813,12 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
     if (rc == CLI_OK) {
       cli_help_ctx_struct_t ctx = {False, True};
       cli_foreach_match(cli, "", parent, with_root, cli_print_help_cb, &ctx);
-      if (!ctx.any) {
+      if (argc > 1) {
+        cli_help_complete_line(cli, parent, ctx.any, True);
+      } else if (!ctx.any) {
         CLI_PRINTLN_STR(cli, "  <cr>");
+      } else {
+        /* The commands were listed. */
       }
     }
   }
@@ -881,7 +884,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_usage_commands(cli_struct_t *cli, const ch
     CLI_PRINTLN_STR(cli, "  history           Command history");
 #endif
     /* Only advertise 'clear' when it is actually registered (it needs an ANSI terminal). */
-    if (cli_resolve_one(cli, "clear", CLI_CMD_ROOT, &h_clear) == CLI_OK &&
+    if (cli_resolve_one(cli, "clear", CLI_CMD_ROOT, CLI_CMD_INVALID, &h_clear) == CLI_OK &&
         cli_cmd_exact(&cli->cmd_pool[h_clear], "clear")) {
       if (cli_cmd_exact(&cli->cmd_pool[h_clear], "cls")) {
         CLI_PRINTLN_STR(cli, "  clear / cls       Clear screen");
@@ -3612,7 +3615,7 @@ static void cli_foreach_match(cli_struct_t *cli, const char *word, cli_cmd_handl
       if (cli_cmd_selectable(cli, cmd, level) && !CLI_CMD_IS_HIDDEN(cmd)) {
         text = cli_cmd_prefix_text(cmd, word);
       }
-      if (text != NULL && pass == 1 && cli_has_any_match(cli, text, parent)) {
+      if (text != NULL && pass == 1 && cli_keyword_shadowed(cli, text, parent)) {
         text = NULL; /* typing it would select a submenu command instead */
       }
       if (text != NULL) {
@@ -3806,11 +3809,30 @@ static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t
 }
 
 /**
+ * @brief Test whether the submenu @p shadow takes over the root keyword @p keyword.
+ *
+ * Inside a submenu, typing a keyword that matches one of the submenu's commands
+ * (hidden ones included) selects that command: a root command with that keyword
+ * cannot be reached there, neither by its keyword nor by an abbreviation of it.
+ *
+ * @param[in] cli      Active CLI session.
+ * @param[in] keyword  Name or alias of a root command.
+ * @param[in] shadow   The submenu, or @c CLI_CMD_INVALID for none.
+ *
+ * @return @c true when @p keyword selects a command of @p shadow.
+ */
+static bool cli_keyword_shadowed(cli_struct_t *cli, const char *keyword, cli_cmd_handle_t shadow) {
+  return (shadow != CLI_CMD_INVALID) && cli_has_any_match(cli, keyword, shadow);
+}
+
+/**
  * @brief Resolve @p word under @p parent to a single command handle.
  *
  * @param[in]  cli     Active CLI session.
  * @param[in]  word    Exact or prefix name / alias to resolve.
  * @param[in]  parent  Root of the sub-tree to search.
+ * @param[in]  shadow  Submenu whose keywords hide @p parent's commands
+ *                     (@c cli_keyword_shadowed()), or @c CLI_CMD_INVALID.
  * @param[out] out     Receives the matched handle on @c CLI_OK.
  *
  * @retval CLI_OK        Unique or exact match found — stored in @p *out.
@@ -3818,7 +3840,7 @@ static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t
  * @retval CLI_ERR_AMBIG Multiple prefix matches with no exact match.
  */
 static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent,
-                              cli_cmd_handle_t *out) {
+                              cli_cmd_handle_t shadow, cli_cmd_handle_t *out) {
   cli_cmd_handle_t first = CLI_CMD_INVALID;
   cli_cmd_handle_t exact = CLI_CMD_INVALID;
   cli_len_t count = 0;
@@ -3833,13 +3855,16 @@ static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handl
 
     /* An exact (case-insensitive) name always wins; hidden commands match only exactly. */
     if (cli_cmd_exact(cmd, word)) {
-      if (exact == CLI_CMD_INVALID) {
+      if (exact == CLI_CMD_INVALID && !cli_keyword_shadowed(cli, word, shadow)) {
         exact = i;
       }
-    } else if (!CLI_CMD_IS_HIDDEN(cmd) && cli_cmd_prefix_text(cmd, word) != NULL) {
-      count++;
-      if (count == 1) {
-        first = i;
+    } else if (!CLI_CMD_IS_HIDDEN(cmd)) {
+      const char *text = cli_cmd_prefix_text(cmd, word);
+      if (text != NULL && !cli_keyword_shadowed(cli, text, shadow)) {
+        count++;
+        if (count == 1) {
+          first = i;
+        }
       }
     } else {
       /* Not a match. */
@@ -3873,7 +3898,7 @@ static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handl
 static bool cli_has_any_match(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent) {
   cli_cmd_handle_t unused;
   /* Ambiguous still counts as "matches here": the error is reported against this level. */
-  return (cli_resolve_one(cli, word, parent, &unused) != CLI_ERR);
+  return (cli_resolve_one(cli, word, parent, CLI_CMD_INVALID, &unused) != CLI_ERR);
 }
 
 /**
@@ -3919,27 +3944,33 @@ static bool cli_cmd_has_registered_children(const cli_struct_t *cli, cli_cmd_han
 #endif
 
 /**
- * @brief Return the level at which the first word of a line is looked up.
+ * @brief Resolve the first word of a line (shared by execution, @c help and the walk
+ *        behind Tab completion and inline @c ? help).
  *
  * Inside a submenu the submenu's own commands come first; a word that matches
  * none of them is looked up among the root commands, which stay usable in every
- * submenu. Unknown words are reported against the submenu.
+ * submenu, except those whose keyword the submenu takes over
+ * (@c cli_keyword_shadowed()): they are out of reach there, as in the lists
+ * @c cli_foreach_match() offers. Unknown words are reported against the submenu.
  *
- * @param[in] cli   Active CLI session.
- * @param[in] word  First word of the line.
+ * @param[in]  cli   Active CLI session.
+ * @param[in]  word  First word of the line.
+ * @param[out] out   Receives the matched handle on @c CLI_OK.
  *
- * @return Submenu handle or @c CLI_CMD_ROOT.
+ * @return @c CLI_OK, @c CLI_ERR (no match) or @c CLI_ERR_AMBIG.
  */
-static cli_cmd_handle_t cli_first_word_parent(cli_struct_t *cli, const char *word) {
+static int8_t cli_resolve_first(cli_struct_t *cli, const char *word, cli_cmd_handle_t *out) {
   cli_cmd_handle_t menu = cli_menu_context_parent(cli);
-  cli_cmd_handle_t parent = menu;
+  int8_t rc = cli_resolve_one(cli, word, menu, CLI_CMD_INVALID, out);
 
-  if (menu != CLI_CMD_ROOT && !cli_has_any_match(cli, word, menu) &&
-      cli_has_any_match(cli, word, CLI_CMD_ROOT)) {
-    parent = CLI_CMD_ROOT;
+  if (rc == CLI_ERR && menu != CLI_CMD_ROOT) {
+    int8_t root_rc = cli_resolve_one(cli, word, CLI_CMD_ROOT, menu, out);
+    if (root_rc != CLI_ERR) {
+      rc = root_rc;
+    }
   }
 
-  return parent;
+  return rc;
 }
 
 /**
@@ -3967,9 +3998,10 @@ static int8_t cli_walk_words(cli_struct_t *cli, const char *argv[], int count,
     cli_cmd_handle_t h;
 
     if (d == 0) {
-      level = cli_first_word_parent(cli, argv[0]);
+      rc = cli_resolve_first(cli, argv[0], &h);
+    } else {
+      rc = cli_resolve_one(cli, argv[d], level, CLI_CMD_INVALID, &h);
     }
-    rc = cli_resolve_one(cli, argv[d], level, &h);
     if (rc == CLI_OK) {
       level = h;
       in_args = !cli_cmd_has_children(cli, h);
@@ -3996,29 +4028,30 @@ static cli_cmd_handle_t cli_context_current(const cli_struct_t *cli) {
  *
  * If the callback already pushed a navigation level (e.g. by switching mode via
  * @c cli_set_mode), that level records where @c exit must return to and is
- * reused; otherwise the current mode and context are pushed first. Either way
- * the level restores the privilege held before the command ran: one the
- * callback granted for the submenu ends when the submenu is left.
+ * reused; otherwise the current mode and context are pushed first.
  *
- * @param[in] cli           Active CLI session.
- * @param[in] node          Submenu node to enter.
- * @param[in] depth_before  @c nav_depth before the callback ran.
- * @param[in] priv_before   Privilege before the callback ran.
+ * The callback may also have returned to an enclosing level first
+ * (@c cli_set_mode() to an ancestor mode): @c nav_floor is the lowest level it
+ * reached and @c nav_floor_priv the privilege in effect there. The level created
+ * at @c nav_floor restores at most that privilege: one the callback granted for
+ * the submenu ends when the submenu is left; one it gave up stays given up.
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] node  Submenu node to enter.
  *
  * @return @c CLI_OK, or @c CLI_ERR_NOMEM when the navigation stack is full.
  */
-static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node, uint8_t depth_before,
-                                cli_priv_t priv_before) {
+static int8_t cli_context_enter(cli_struct_t *cli, cli_cmd_handle_t node) {
   int8_t rc = CLI_OK;
 
   if (cli->context != node) {
-    if (cli->nav_depth <= depth_before) {
+    if (cli->nav_depth <= cli->nav_floor) {
       rc = cli_nav_push(cli);
     }
     if (rc == CLI_OK) {
-      if (cli->nav_depth > depth_before) {
-        /* The level this command created (not one it returned to). */
-        cli->nav_stack[depth_before].privilege = priv_before;
+      cli_nav_frame_struct_t *frame = &cli->nav_stack[cli->nav_floor];
+      if (frame->privilege > cli->nav_floor_priv) {
+        frame->privilege = cli->nav_floor_priv;
       }
       cli->context = node;
     }
@@ -4267,6 +4300,36 @@ static void cli_show_help(cli_struct_t *cli) {
 }
 
 /**
+ * @brief End the help for the command @p node (the words typed so far) by what Enter
+ *        would do with them: @c <cr> when the command runs (also after its listed
+ *        subcommands), "% Incomplete command." when it cannot and nothing was listed.
+ *
+ * @param[in] cli        Active CLI session.
+ * @param[in] node       Command the typed words reached.
+ * @param[in] listed     Subcommands of @p node were listed.
+ * @param[in] as_output  @c true for command output (the @c help command: pipe filter
+ *                       applies); @c false for the editor's inline help.
+ */
+static void cli_help_complete_line(cli_struct_t *cli, cli_cmd_handle_t node, bool listed,
+                                   bool as_output) {
+  if (cli->cmd_pool[node].callback != NULL) {
+    if (as_output) {
+      CLI_PRINTLN_STR(cli, "  <cr>");
+    } else {
+      CLI_WSTR(cli, "  <cr>\r\n");
+    }
+  } else if (!listed) {
+    if (as_output) {
+      CLI_PRINTLN_STR(cli, "% Incomplete command.");
+    } else {
+      CLI_WSTR(cli, "% Incomplete command.\r\n");
+    }
+  } else {
+    /* A container: only its subcommands can follow. */
+  }
+}
+
+/**
  * @brief Inline @c ? help for command words (no pipe filter before the cursor).
  *
  * @param[in]     cli      Active CLI session.
@@ -4313,12 +4376,20 @@ static void cli_show_help_words(cli_struct_t *cli, char *scratch) {
     if (!args) {
       cli_foreach_match(cli, partial, parent, depth == 0, cli_print_help_cb, &ctx);
     }
-    if (!ctx.any) {
-      if (partial[0] != '\0' && !args) {
-        CLI_WSTR(cli, "% Unknown command.\r\n");
-      } else {
-        CLI_WSTR(cli, "  <cr>\r\n"); /* nothing more to type: the command is complete */
+    if (partial[0] != '\0') {
+      if (!ctx.any) {
+        if (args) {
+          CLI_WSTR(cli, "  <cr>\r\n"); /* an argument being typed */
+        } else {
+          CLI_WSTR(cli, "% Unknown command.\r\n");
+        }
       }
+    } else if (depth == 0) {
+      if (!ctx.any) {
+        CLI_WSTR(cli, "  <cr>\r\n"); /* nothing to choose from: Enter does nothing */
+      }
+    } else {
+      cli_help_complete_line(cli, parent, ctx.any, False);
     }
     cli_redraw_line(cli);
   }
@@ -4947,24 +5018,24 @@ static int8_t cli_quit_key(cli_struct_t *cli) {
  * @brief Iterative command tree walk and execution.
  *
  * Matches tokens in @p argv against the command tree, descending through
- * intermediate nodes, and calls the leaf callback with remaining tokens.
+ * intermediate nodes, and calls the leaf callback with remaining tokens. The
+ * first word is looked up by @c cli_resolve_first().
  *
  * @param[in] cli     Active CLI session.
  * @param[in] argv    Full token array.
  * @param[in] argc    Total number of tokens.
- * @param[in] depth   Current token index being matched.
- * @param[in] parent  Node handle to match children of.
  *
  * @return @c CLI_OK, @c CLI_ERR, @c CLI_ERR_QUIT, or @c CLI_ERR_AMBIG.
  */
-static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc,
-                                  cli_argc_t depth, cli_cmd_handle_t parent) {
+static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_argc_t argc) {
   int8_t rc = CLI_ERR;
   bool done = False;
+  cli_cmd_handle_t parent = CLI_CMD_ROOT;
 
-  for (; depth < argc && !done; depth++) {
+  for (cli_argc_t depth = 0; depth < argc && !done; depth++) {
     cli_cmd_handle_t h;
-    int8_t r = cli_resolve_one(cli, argv[depth], parent, &h);
+    int8_t r = (depth == 0) ? cli_resolve_first(cli, argv[0], &h)
+                            : cli_resolve_one(cli, argv[depth], parent, CLI_CMD_INVALID, &h);
 
     if (r == CLI_ERR) {
       CLI_WSTR(cli, "% Unknown command: ");
@@ -4990,9 +5061,13 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
         /* Execute this node's callback with remaining tokens as args */
         if (cmd->callback != NULL) {
           cli_argc_t rem_argc = argc - depth;
-          uint8_t depth_before = cli->nav_depth;
-          cli_priv_t priv_before = cli->privilege;
+          uint8_t outer_floor = cli->nav_floor;
+          cli_priv_t outer_floor_priv = cli->nav_floor_priv;
           cli_session_state_enum_t state_before = cli->session_state;
+
+          /* Track the lowest level this command reaches (cli_context_enter()). */
+          cli->nav_floor = cli->nav_depth;
+          cli->nav_floor_priv = cli->privilege;
           rc = cmd->callback(cli, cmd->name, rem_argc, &argv[depth]);
 
           /* A bare submenu command (no arguments) enters that submenu. Its subcommands are
@@ -5001,10 +5076,17 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
            * callback, in which case navigation is left alone. */
           if (rc == CLI_OK && rem_argc == 1 && cli->session_state == state_before &&
               cli_handle_valid(cli, h) && cli_cmd_has_children(cli, h)) {
-            if (cli_context_enter(cli, h, depth_before, priv_before) != CLI_OK) {
+            if (cli_context_enter(cli, h) != CLI_OK) {
               CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
               rc = CLI_ERR_NOMEM;
             }
+          }
+
+          /* A command that runs this one (cli_exec()) keeps tracking its own lowest level,
+           * which is this command's when this one went below it. */
+          if (outer_floor <= cli->nav_floor) {
+            cli->nav_floor = outer_floor;
+            cli->nav_floor_priv = outer_floor_priv;
           }
         } else {
           CLI_WSTR(cli, "% Incomplete command.\r\n");
@@ -5093,7 +5175,7 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
     }
 
     if (rc == CLI_OK && argc > 0) {
-      rc = cli_execute_command(cli, argv, argc, 0, cli_first_word_parent(cli, argv[0]));
+      rc = cli_execute_command(cli, argv, argc);
     }
 
 #if CLI_ENABLE_HISTORY
@@ -5393,7 +5475,12 @@ static cli_len_t cli_auth_input_limit(const cli_struct_t *cli) {
 static int8_t cli_auth_submit_line(cli_struct_t *cli) {
   int8_t rc = CLI_OK;
 
-  if (cli->auth_state == CLI_AUTH_USERNAME) {
+  if (cli->auth_state == CLI_AUTH_USERNAME && cli->input_len == 0) {
+    /* Enter alone is not a login attempt (it is how a user checks that the line is
+     * alive): ask for the username again, as login(1) does. */
+    cli_auth_prompt_username(cli);
+
+  } else if (cli->auth_state == CLI_AUTH_USERNAME) {
     (void)cli_strlcpy(cli->auth_username, cli->input, sizeof(cli->auth_username));
     cli_reset_input(cli);
     cli->auth_state = CLI_AUTH_PASSWORD;
@@ -5718,6 +5805,11 @@ static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
   const cli_nav_frame_struct_t *frame = &cli->nav_stack[level];
   bool changed = (frame->mode != cli->mode || frame->privilege != cli->privilege);
 
+  if (level < cli->nav_floor) {
+    /* A running command returned to an enclosing level (see cli_context_enter()). */
+    cli->nav_floor = level;
+    cli->nav_floor_priv = frame->privilege;
+  }
   cli->nav_depth = level;
   cli->mode = frame->mode;
   cli->context = frame->context;
@@ -5729,11 +5821,16 @@ static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
 
 /**
  * @brief Drop all saved navigation levels and return to user exec at the root.
+ *
+ * Every caller then sets @c CLI_PRIV_USER.
+ *
  * @param[in] cli  Active CLI session.
  */
 static void cli_nav_reset(cli_struct_t *cli) {
   cli_mode_t old_mode = cli->mode;
 
+  cli->nav_floor = 0U;
+  cli->nav_floor_priv = CLI_PRIV_USER;
   cli->nav_depth = 0U;
   cli->context = CLI_CMD_ROOT;
   cli->mode = CLI_MODE_EXEC;
@@ -5770,6 +5867,7 @@ static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
      * submenu that no longer exists: 'exit' would leave it without changing anything.
      * Such levels are dropped. */
     uint8_t kept = 0U;
+    uint8_t dropped_below_floor = 0U;
     for (uint8_t i = 0U; i < cli->nav_depth; i++) {
       const cli_nav_frame_struct_t *f = &cli->nav_stack[i];
       bool last = (i + 1U == cli->nav_depth);
@@ -5781,9 +5879,15 @@ static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
           f->privilege != above_privilege) {
         cli->nav_stack[kept] = *f;
         kept++;
+      } else if (i < cli->nav_floor) {
+        dropped_below_floor++;
+      } else {
+        /* Dropped at or above a running command's lowest level. */
       }
     }
     cli->nav_depth = kept;
+    /* The level a running command reached keeps its place among the remaining levels. */
+    cli->nav_floor = (uint8_t)(cli->nav_floor - dropped_below_floor);
   }
 }
 

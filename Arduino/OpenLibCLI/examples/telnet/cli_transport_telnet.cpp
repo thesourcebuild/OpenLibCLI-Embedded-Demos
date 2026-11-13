@@ -20,6 +20,9 @@
 #include <WiFi.h>
 #include <Client.h>
 #include <string.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <lwip/sockets.h> /* recv(): end-of-stream check */
+#endif
 
 #include "cli_transport_telnet.hpp"
 
@@ -150,7 +153,20 @@ bool cli_transport_telnet_client_connected(const cli_telnet_ctx_struct_t *ctx) {
   bool connected = false;
 
   if (ctx && ctx->client_handle) {
-    connected = ((Client *)ctx->client_handle)->connected();
+    WiFiClient *client = (WiFiClient *)ctx->client_handle;
+
+    connected = client->connected();
+#if defined(ARDUINO_ARCH_ESP32)
+    /* The ESP32 core's connected() keeps reporting a client that closed its side as
+     * connected (recv() returning 0, the end of the stream, is not treated as a close).
+     * Once everything it sent has been read, check for the end of the stream directly. */
+    if (connected && client->available() == 0 && client->fd() >= 0) {
+      uint8_t probe;
+      if (recv(client->fd(), &probe, 1, MSG_PEEK | MSG_DONTWAIT) == 0) {
+        connected = false;
+      }
+    }
+#endif
   }
 
   return connected;
@@ -178,7 +194,8 @@ int8_t cli_telnet_handler(cli_telnet_ctx_struct_t *ctx) {
       }
     }
 
-    if (result == CLI_OK && !client->connected() && ctx->rx_pos >= ctx->rx_len) {
+    if (result == CLI_OK && !cli_transport_telnet_client_connected(ctx) &&
+        ctx->rx_pos >= ctx->rx_len) {
       result = CLI_ERR;
     }
   }

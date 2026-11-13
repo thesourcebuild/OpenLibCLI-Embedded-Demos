@@ -1,4 +1,5 @@
 #include <string.h>
+#include <inttypes.h>
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 #include "OpenLibCLI/cli.h"
@@ -54,7 +55,7 @@
 #define CLI_DEMO_BANNER_SERIAL                                       \
   "************************************************************\r\n" \
   "*          OpenLibCLI  --  Serial (UART) on Pico           *\r\n" \
-  "*      Pure-C, 100%% Static Allocation CLI Engine          *\r\n" \
+  "*      Pure-C, 100% Static Allocation CLI Engine           *\r\n" \
   "************************************************************"
 
 #define APP_MODE_CALCULATOR (CLI_MODE_USER_BASE)
@@ -235,6 +236,23 @@ static int8_t cmd_arithmetic(cli_struct_t *cli, const char *cmd, cli_argc_t argc
   return CLI_OK;
 }
 
+/* Parse one operand with the selected backend: false when it is not a whole number in
+ * the int32_t range (nothing is stored then). */
+static bool parse_operand(const char *s, int32_t *out)
+{
+  bool ok;
+
+#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
+  ok = parse_i32(s, out);
+#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
+  ok = strtol_parse_i32(s, out);
+#else
+  ok = (cli_sscanf(s, "%" SCNd32, out) == 1);
+#endif
+
+  return ok;
+}
+
 static int8_t cmd_add(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[])
 {
   (void)cmd;
@@ -250,22 +268,23 @@ static int8_t cmd_add(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
   }
   else
   {
-    int32_t a;
-    int32_t b;
+    int32_t a = 0;
+    int32_t b = 0;
+    const char *rhs = (argc == 4) ? argv[3] : argv[2];
 
-#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
-    parse_i32(argv[1], &a);
-    parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
-    strtol_parse_i32(argv[1], &a);
-    strtol_parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#else
-    cli_sscanf(argv[1], "%d", &a);
-    cli_sscanf((argc == 4) ? argv[3] : argv[2], "%d", &b);
-#endif
-
-    cli_println(cli, "%d", a + b);
-    rc = CLI_OK;
+    if (!parse_operand(argv[1], &a) || !parse_operand(rhs, &b))
+    {
+      cli_error(cli, "Invalid number");
+    }
+    else if ((b > 0 && a > INT32_MAX - b) || (b < 0 && a < INT32_MIN - b))
+    {
+      cli_error(cli, "Result out of range");
+    }
+    else
+    {
+      cli_println(cli, "%" PRId32, a + b);
+      rc = CLI_OK;
+    }
   }
 
   return rc;
@@ -286,22 +305,23 @@ static int8_t cmd_sub(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
   }
   else
   {
-    int32_t a;
-    int32_t b;
+    int32_t a = 0;
+    int32_t b = 0;
+    const char *rhs = (argc == 4) ? argv[3] : argv[2];
 
-#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
-    parse_i32(argv[1], &a);
-    parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
-    strtol_parse_i32(argv[1], &a);
-    strtol_parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#else
-    cli_sscanf(argv[1], "%d", &a);
-    cli_sscanf((argc == 4) ? argv[3] : argv[2], "%d", &b);
-#endif
-
-    cli_println(cli, "%d", a - b);
-    rc = CLI_OK;
+    if (!parse_operand(argv[1], &a) || !parse_operand(rhs, &b))
+    {
+      cli_error(cli, "Invalid number");
+    }
+    else if ((b < 0 && a > INT32_MAX + b) || (b > 0 && a < INT32_MIN + b))
+    {
+      cli_error(cli, "Result out of range");
+    }
+    else
+    {
+      cli_println(cli, "%" PRId32, a - b);
+      rc = CLI_OK;
+    }
   }
 
   return rc;

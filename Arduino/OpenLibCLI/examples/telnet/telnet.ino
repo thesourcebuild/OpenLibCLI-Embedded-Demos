@@ -17,6 +17,7 @@
 
 #include <Arduino.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include <WiFi.h>
 #if defined(ARDUINO_ARCH_ESP32)
@@ -47,6 +48,15 @@
 
 /** Select active backend here: */
 #define CLI_PARSE_BACKEND  CLI_PARSE_BACKEND_HANDROLLED
+
+/* 'add <a> + <b>' is four words: it needs CLI_MAX_ARGS >= 5 (the AVR profile allows 3). */
+#if CLI_MAX_ARGS >= 5
+#define CLI_DEMO_ADD_USAGE "Usage: add <a> <b>  or  add <a> + <b>"
+#define CLI_DEMO_SUB_USAGE "Usage: sub <a> <b>  or  sub <a> - <b>"
+#else
+#define CLI_DEMO_ADD_USAGE "Usage: add <a> <b>"
+#define CLI_DEMO_SUB_USAGE "Usage: sub <a> <b>"
+#endif
 
 /** @brief Fallback built-in LED pin for boards that do not define LED_BUILTIN. */
 #if defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
@@ -206,7 +216,7 @@ void loop(void) {
 #endif
   }
   if (incoming) {
-    if (!s_client_active || !s_telnet_client.connected()) {
+    if (!s_client_active || !cli_transport_telnet_client_connected(&s_telnet_ctx)) {
       if (s_client_active) {
         s_telnet_client.stop();
       }
@@ -225,7 +235,7 @@ void loop(void) {
 
   if (s_client_active) {
     /* Ends the session (and the connection) when the client went away or the session
-     * stopped itself (failed logins). */
+     * stopped itself (e.g. a write to the client failed). */
     cli_telnet_poll();
 
 #if CLI_ENABLE_TIMMING_STATS
@@ -369,31 +379,43 @@ int8_t cmd_arithmetic(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
   return CLI_OK;
 }
 
+/* Parse one operand with the selected backend: false when it is not a whole number in
+ * the int32_t range (nothing is stored then). */
+static bool parse_operand(const char *s, int32_t *out) {
+  bool ok;
+
+#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
+  ok = parse_i32(s, out);
+#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
+  ok = strtol_parse_i32(s, out);
+#else
+  ok = (cli_sscanf(s, "%" SCNd32, out) == 1);
+#endif
+
+  return ok;
+}
+
 int8_t cmd_add(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {
   (void)cmd;
   int8_t rc = CLI_ERR;
 
   if (argc < 3 || argc > 4) {
-    cli_println(cli, "Usage: add <a> <b>  or  add <a> + <b>");
+    cli_println(cli, CLI_DEMO_ADD_USAGE);
   } else if (argc == 4 && strcmp(argv[2], "+") != 0) {
     cli_println(cli, "Usage: add <a> + <b>");
   } else {
-    int32_t a;
-    int32_t b;
-		
-#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
-    parse_i32(argv[1], &a);
-    parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
-    strtol_parse_i32(argv[1], &a);
-    strtol_parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#else
-    cli_sscanf(argv[1], "%d", &a);
-    cli_sscanf((argc == 4) ? argv[3] : argv[2], "%d", &b);
-#endif
-		
-    cli_println(cli, "%d", a + b);
-    rc = CLI_OK;
+    int32_t a = 0;
+    int32_t b = 0;
+    const char *rhs = (argc == 4) ? argv[3] : argv[2];
+
+    if (!parse_operand(argv[1], &a) || !parse_operand(rhs, &b)) {
+      cli_error(cli, "Invalid number");
+    } else if ((b > 0 && a > INT32_MAX - b) || (b < 0 && a < INT32_MIN - b)) {
+      cli_error(cli, "Result out of range");
+    } else {
+      cli_println(cli, "%" PRId32, a + b);
+      rc = CLI_OK;
+    }
   }
 
   return rc;
@@ -404,26 +426,22 @@ int8_t cmd_sub(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *
   int8_t rc = CLI_ERR;
 
   if (argc < 3 || argc > 4) {
-    cli_println(cli, "Usage: sub <a> <b>  or  sub <a> - <b>");
+    cli_println(cli, CLI_DEMO_SUB_USAGE);
   } else if (argc == 4 && strcmp(argv[2], "-") != 0) {
     cli_println(cli, "Usage: sub <a> - <b>");
   } else {
-    int32_t a;
-    int32_t b;
-		
-#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_HANDROLLED
-    parse_i32(argv[1], &a);
-    parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
-    strtol_parse_i32(argv[1], &a);
-    strtol_parse_i32((argc == 4) ? argv[3] : argv[2], &b);
-#else
-    cli_sscanf(argv[1], "%d", &a);
-    cli_sscanf((argc == 4) ? argv[3] : argv[2], "%d", &b);
-#endif
-		
-    cli_println(cli, "%d", a - b);
-    rc = CLI_OK;
+    int32_t a = 0;
+    int32_t b = 0;
+    const char *rhs = (argc == 4) ? argv[3] : argv[2];
+
+    if (!parse_operand(argv[1], &a) || !parse_operand(rhs, &b)) {
+      cli_error(cli, "Invalid number");
+    } else if ((b < 0 && a > INT32_MAX + b) || (b > 0 && a < INT32_MIN + b)) {
+      cli_error(cli, "Result out of range");
+    } else {
+      cli_println(cli, "%" PRId32, a - b);
+      rc = CLI_OK;
+    }
   }
 
   return rc;
@@ -505,6 +523,8 @@ static void cli_telnet_demo_setup(void *client_handle) {
     cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
     cli_set_idle_timeout(&s_cli, 60);
     cli_set_idle_timeout_mode(&s_cli, CLI_IDLE_TIMEOUT_POLICY_RESET_SESSION);
+    /* Too many failed logins lock input for a while instead of closing the connection. */
+    cli_set_auth_failure_mode(&s_cli, CLI_AUTH_FAILURE_MODE_LOCKOUT);
 
     s_session_id++;
     memset(&s_app, 0, sizeof(s_app));

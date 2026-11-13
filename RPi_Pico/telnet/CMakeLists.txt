@@ -79,11 +79,6 @@ target_link_libraries(OpenLibCLI
 pico_enable_stdio_usb(OpenLibCLI 1)
 pico_enable_stdio_uart(OpenLibCLI 0)
 
-# Force USB disconnect/reconnect on reset so Windows re-enumerates reliably
-target_compile_definitions(OpenLibCLI PRIVATE
-    PICO_STDIO_USB_CONNECT_WITH_CLASSIC_DISABLE=1
-)
-
 # CYW43 support is provided by pico_cyw43_arch_lwip_threadsafe_background above.
 if (PICO_CYW43_SUPPORTED)
     target_compile_definitions(OpenLibCLI PRIVATE CLI_HAS_CYW43=1)

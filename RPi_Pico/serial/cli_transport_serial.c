@@ -5,12 +5,31 @@
 
 static int s_pending_byte = PICO_ERROR_TIMEOUT;
 
+#if LIB_PICO_STDIO_USB
+/* Whether a terminal holds the USB serial port open (DTR), as last seen. */
+static bool s_usb_host;
+#endif
+
 static cli_transport_ret_t pico_serial_available(void *ctx) {
+  cli_transport_ret_t result = 0;
+
   (void)ctx;
-  if (s_pending_byte == PICO_ERROR_TIMEOUT) {
-    s_pending_byte = getchar_timeout_us(0); /* kept for pico_serial_read() */
+#if LIB_PICO_STDIO_USB
+  if (stdio_usb_connected() != s_usb_host) {
+    /* A terminal closed or opened the port: the session ends, so the next terminal starts
+     * at the banner and login instead of inside the previous user's session. */
+    s_usb_host = !s_usb_host;
+    s_pending_byte = PICO_ERROR_TIMEOUT;
+    result = CLI_ERR;
+  } else
+#endif
+  {
+    if (s_pending_byte == PICO_ERROR_TIMEOUT) {
+      s_pending_byte = getchar_timeout_us(0); /* kept for pico_serial_read() */
+    }
+    result = (s_pending_byte != PICO_ERROR_TIMEOUT) ? 1 : 0;
   }
-  return (s_pending_byte != PICO_ERROR_TIMEOUT) ? 1 : 0;
+  return result;
 }
 
 static cli_transport_ret_t pico_serial_read(void *ctx) {
@@ -56,5 +75,8 @@ void cli_transport_serial_init(cli_transport_struct_t *transport) {
     transport->write = pico_serial_write;
     transport->flush = pico_serial_flush;
     transport->ctx = NULL;
+#if LIB_PICO_STDIO_USB
+    s_usb_host = stdio_usb_connected();
+#endif
   }
 }

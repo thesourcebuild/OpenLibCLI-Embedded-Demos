@@ -82,13 +82,12 @@ void cli_transport_serial_init(cli_transport_struct_t *transport)
     transport->ctx = NULL;
   }
 
-  /* Install UART driver so uart_get_buffered_data_len() etc. work.
-   * May already be installed by boot/console code (ESP_ERR_INVALID_STATE). */
-  esp_err_t err = uart_driver_install(CLI_UART_NUM, CLI_UART_BUF_SIZE * 2, 0, 0, NULL, 0);
-  if (err == ESP_ERR_INVALID_STATE) {
+  /* Install UART driver so uart_get_buffered_data_len() etc. work. It may already be
+   * installed by other code (e.g. a console): then it is used as configured there. */
+  if (uart_is_driver_installed(CLI_UART_NUM)) {
     s_uart_installed = true;
   } else {
-    ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(uart_driver_install(CLI_UART_NUM, CLI_UART_BUF_SIZE * 2, 0, 0, NULL, 0));
     uart_config_t uart_config = {
       .baud_rate  = CLI_UART_BAUD,
       .data_bits  = UART_DATA_8_BITS,
