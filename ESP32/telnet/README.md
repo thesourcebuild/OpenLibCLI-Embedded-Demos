@@ -46,4 +46,4 @@ The CLI will negotiate telnet options (ECHO, SGA, NAWS) automatically.
 
 ## Notes
 
-Built-in LED GPIO auto-detects per target chip (override via menuconfig). The server uses BSD sockets (lwIP via ESP-IDF) and serves one telnet client at a time: it keeps listening, and a client that connects while a session runs waits until that session ends. `exit` / `quit` and 60 s of inactivity restart the login on the same connection. IAC negotiation and 0xFF escaping are handled identically to the Pico W telnet demo.
+The built-in LED GPIO defaults to the target chip's common dev board (GPIO2 on ESP32, GPIO8 on ESP32-C3/C6/H2, GPIO48 on ESP32-S3; override via menuconfig). The server uses BSD sockets (lwIP via ESP-IDF) and serves one telnet client at a time: a client that connects while a session runs is disconnected at once, as in the Pico W and Arduino demos. `exit` / `quit` and 60 s of inactivity restart the login on the same connection. IAC negotiation and 0xFF escaping are handled identically to the Pico W telnet demo.

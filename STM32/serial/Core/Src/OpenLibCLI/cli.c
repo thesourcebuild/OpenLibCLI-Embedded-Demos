@@ -223,6 +223,15 @@ typedef struct {
 } cli_complete_ctx_struct_t;
 #endif
 
+/** @brief What a callback can replace while it runs: the session (@c cli_restart_session(),
+ *         @c cli_stop()) and the login (@c cli_request_auth(), a pending password). */
+typedef struct {
+  cli_session_state_enum_t session_state; /**< Session state before the callback. */
+#if CLI_ENABLE_AUTH
+  cli_auth_state_enum_t auth_state; /**< Login state before the callback. */
+#endif
+} cli_session_mark_struct_t;
+
 /*=======================================================================================
  * External Data Variables
  *=======================================================================================*/
@@ -458,6 +467,9 @@ static int8_t cli_auth_handle(cli_struct_t *cli, int byte);
 #endif
 static void cli_reset_input(cli_struct_t *cli);
 static void cli_session_reset(cli_struct_t *cli);
+static cli_session_mark_struct_t cli_session_mark(const cli_struct_t *cli);
+static bool cli_session_kept(const cli_struct_t *cli, const cli_session_mark_struct_t *mark);
+static int8_t cli_enable_enter(cli_struct_t *cli);
 static int8_t cli_submit_line(cli_struct_t *cli);
 
 /* Escape-Sequence State Machine --------------------------------------------------------*/
@@ -635,9 +647,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
   (void)argv;
 
   if (cli != NULL) {
-    /* Already privileged or no secret/callback configured: switch mode immediately. The
-     * mode is entered before privilege is raised so the saved navigation level is the
-     * unprivileged one that a later 'exit' returns to. */
+    /* Already privileged or no secret/callback configured: switch mode immediately. */
 #if CLI_ENABLE_AUTH
     bool needs_secret =
         (cli->enable_privilege_secret[0] != '\0' || cli->enable_privilege_cb != NULL);
@@ -651,14 +661,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
        * password, a lockout): the user is not at the command prompt, nothing to enable. */
       rc = CLI_ERR;
     } else if (cli->privilege >= CLI_PRIV_PRIVILEGED || !needs_secret) {
-      rc = cli_set_mode(cli, CLI_MODE_ENABLE);
-      if (rc == CLI_OK) {
-        if (cli->privilege < CLI_PRIV_PRIVILEGED) {
-          cli_set_privilege(cli, CLI_PRIV_PRIVILEGED); /* raised to it, never lowered */
-        }
-      } else {
-        CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
-      }
+      rc = cli_enable_enter(cli);
     }
 #if CLI_ENABLE_AUTH
     /* Secret required — the session engine routes the next line to the password handler */
@@ -1347,10 +1350,16 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli) {
 #endif
       cli->auth_attempts = 0;
       cli->enable_attempts = 0;
-      cli->auth_lockout_started_ts = 0UL;
       cli_auth_reset_work(cli);
-      cli->auth_state = CLI_AUTH_USERNAME;
-      cli_input_prompt_changed(cli);
+      if (cli->auth_state == CLI_AUTH_LOCKOUT && !cli_auth_lockout_expired(cli)) {
+        /* A lockout that is still running is not ended early (as for a new session): the
+         * login is asked for once it is over. */
+        cli->auth_resume_state = CLI_AUTH_USERNAME;
+      } else {
+        cli->auth_lockout_started_ts = 0UL;
+        cli->auth_state = CLI_AUTH_USERNAME;
+        cli_input_prompt_changed(cli);
+      }
     }
 #else
     (void)cli;
@@ -5086,7 +5095,7 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
         /* Execute this node's callback with remaining tokens as args */
         if (cmd->callback != NULL) {
           cli_argc_t rem_argc = argc - depth;
-          cli_session_state_enum_t state_before = cli->session_state;
+          cli_session_mark_struct_t mark = cli_session_mark(cli);
           /* This command's entry: commands run from it (cli_exec()) use the ones above. */
           uint8_t slot = (uint8_t)(cli->exec_depth - 1U);
 
@@ -5097,9 +5106,9 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
 
           /* A bare submenu command (no arguments) enters that submenu. Its subcommands are
            * looked up again now: the callback may have switched to the mode (or raised the
-           * privilege) they need. The session may have been restarted / stopped by the
-           * callback, in which case navigation is left alone. */
-          if (rc == CLI_OK && rem_argc == 1 && cli->session_state == state_before &&
+           * privilege) they need. The callback may have replaced the session or the login
+           * (a restart, cli_request_auth()), in which case navigation is left alone. */
+          if (rc == CLI_OK && rem_argc == 1 && cli_session_kept(cli, &mark) &&
               cli_handle_valid(cli, h) && cli_cmd_has_children(cli, h)) {
             if (cli_context_enter(cli, h, slot) != CLI_OK) {
               CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
@@ -5607,12 +5616,7 @@ static int8_t cli_auth_enable_check(cli_struct_t *cli) {
 static void cli_auth_enable_result(cli_struct_t *cli, int8_t ok, int8_t *rc) {
   if (ok == CLI_OK) {
     cli->enable_attempts = 0;
-    /* Enter the mode before raising privilege so 'exit' returns to the unprivileged level. */
-    if (cli_set_mode(cli, CLI_MODE_ENABLE) == CLI_OK) {
-      cli_set_privilege(cli, CLI_PRIV_PRIVILEGED);
-    } else {
-      CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
-    }
+    (void)cli_enable_enter(cli);
   } else {
     CLI_WSTR(cli, "% Access denied.\r\n");
     cli->enable_attempts++;
@@ -5785,6 +5789,73 @@ static void cli_session_reset(cli_struct_t *cli) {
   cli->enable_attempts = 0;
   cli_auth_reset_work(cli);
 #endif
+}
+
+/**
+ * @brief Note the session and login state before a callback runs.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return The mark to compare with @c cli_session_kept() afterwards.
+ */
+static cli_session_mark_struct_t cli_session_mark(const cli_struct_t *cli) {
+  cli_session_mark_struct_t mark;
+
+  mark.session_state = cli->session_state;
+#if CLI_ENABLE_AUTH
+  mark.auth_state = cli->auth_state;
+#endif
+
+  return mark;
+}
+
+/**
+ * @brief Test whether a callback kept the session and login it ran in.
+ *
+ * A callback that restarted or stopped the session, asked for a new login or started a
+ * password prompt has replaced them: what the finished command would still do (enter a
+ * submenu, raise the privilege) belongs to the old ones.
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] mark  State noted by @c cli_session_mark() before the callback.
+ *
+ * @return @c true when nothing was replaced.
+ */
+static bool cli_session_kept(const cli_struct_t *cli, const cli_session_mark_struct_t *mark) {
+  bool kept = (cli->session_state == mark->session_state);
+
+#if CLI_ENABLE_AUTH
+  kept = kept && (cli->auth_state == mark->auth_state);
+#endif
+
+  return kept;
+}
+
+/**
+ * @brief Enter privileged exec: the result of 'enable'.
+ *
+ * The mode is entered before privilege is raised so the saved navigation level is the
+ * unprivileged one that a later 'exit' returns to. The privilege is not raised when the
+ * mode-change callback replaced the session or the login: it was granted to this user,
+ * not to the next one.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return @c CLI_OK, or the @c cli_set_mode() error when the navigation depth is reached.
+ */
+static int8_t cli_enable_enter(cli_struct_t *cli) {
+  cli_session_mark_struct_t mark = cli_session_mark(cli);
+  int8_t rc = cli_set_mode(cli, CLI_MODE_ENABLE);
+
+  if (rc != CLI_OK) {
+    CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+  } else if (cli_session_kept(cli, &mark) && cli->privilege < CLI_PRIV_PRIVILEGED) {
+    cli_set_privilege(cli, CLI_PRIV_PRIVILEGED); /* raised to it, never lowered */
+  } else {
+    /* Already privileged, or the mode-change callback replaced the session / login. */
+  }
+
+  return rc;
 }
 
 /**

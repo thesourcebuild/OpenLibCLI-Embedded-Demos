@@ -43,7 +43,7 @@
 /** @brief Arithmetic sub-menu mode. */
 #define APP_MODE_ARITHMETIC (CLI_MODE_USER_BASE + 1)
 
-/** @brief LED pin — adjust for your board. */
+/** @brief LED pin — adjust for your board (and LED_PORT_CLK_ENABLE() with it). */
 #define LED_PORT GPIOA
 #define LED_PIN  GPIO_PIN_5
 
@@ -51,7 +51,8 @@
  * Private Macros
  *=======================================================================================*/
 
-/* No private function-like macros. */
+/** @brief Enable the clock of LED_PORT. */
+#define LED_PORT_CLK_ENABLE() __HAL_RCC_GPIOA_CLK_ENABLE()
 
 /*=======================================================================================
  * Private Types
@@ -118,7 +119,7 @@ void cli_demo_setup(UART_HandleTypeDef *huart) {
     cli_demo_shutdown();
 
     /* Init on-board LED pin */
-    __HAL_RCC_GPIOC_CLK_ENABLE();
+    LED_PORT_CLK_ENABLE();
     gpio_led.Pin = LED_PIN;
     gpio_led.Mode = GPIO_MODE_OUTPUT_PP;
     gpio_led.Speed = GPIO_SPEED_FREQ_LOW;

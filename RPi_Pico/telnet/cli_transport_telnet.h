@@ -35,8 +35,6 @@ typedef struct {
   tcpwnd_size_t rx_ring_head;               /* index of the oldest byte (lwIP lock) */
   tcpwnd_size_t rx_ring_count;              /* bytes in rx_ring (lwIP lock) */
   bool peer_closed;      /* the client closed its side (lwIP lock) */
-  bool started;
-  bool input_started;
 } cli_telnet_ctx_t;
 
 /* Take a new connection: call from the tcp_accept callback (lwIP context), so the

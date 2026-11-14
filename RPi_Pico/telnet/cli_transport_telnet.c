@@ -209,28 +209,18 @@ int8_t cli_telnet_handler(cli_telnet_ctx_t *ctx)
     if (!connected) {
       result = CLI_ERR; /* reset or failed (tcp_err_cb) */
     } else if (raw_len > 0U) {
-      bool accept_input = ctx->started;
-
       ctx->rx_len = 0;
       ctx->rx_pos = 0;
       for (u16_t i = 0U; i < raw_len; i++) {
         uint8_t out;
-        /* One decoded byte at most per raw byte: rx_buf (as large as raw_buf) cannot fill. */
-        if (telnet_process_byte(ctx, ctx->raw_buf[i], &out) && accept_input &&
-            (ctx->input_started || out > 0x20U)) {
-          ctx->input_started = true;
+        /* One decoded byte at most per raw byte: rx_buf (as large as raw_buf) cannot fill.
+         * Option replies are consumed here; everything else is the client's input. */
+        if (telnet_process_byte(ctx, ctx->raw_buf[i], &out)) {
           ctx->rx_buf[ctx->rx_len++] = out;
         }
       }
-      if (!ctx->started && !accept_input) {
-        ctx->started = true;
-        ctx->input_started = false;
-      }
     } else if (closed) {
       result = CLI_ERR; /* the client closed and everything it sent has been decoded */
-    } else if (!ctx->started) {
-      ctx->started = true;
-      ctx->input_started = false;
     } else {
       /* Nothing received yet. */
     }

@@ -12,27 +12,13 @@
 #include "cli_transport_serial.h"
 #include "cli_demo_setup.h"
 
-/* Built-in LED GPIO — auto-detected for common dev boards:
- *   ESP32 DevKitC     → GPIO2
- *   ESP32-C3 DevKitM  → GPIO8
- *   ESP32-S3 DevKitC  → GPIO48
- *   ESP32-C6 DevKitM  → GPIO8
- *   ESP32-H2 DevKitM  → GPIO8
- * Override via menuconfig "OpenLibCLI Serial Demo Configuration".
+/* Built-in LED GPIO: menuconfig "OpenLibCLI Serial Demo Configuration". Its default
+ * follows the target's common dev board:
+ *   ESP32 DevKitC           → GPIO2
+ *   ESP32-C3/C6/H2 DevKitM  → GPIO8
+ *   ESP32-S3 DevKitC        → GPIO48
  */
-#ifdef CONFIG_CLI_LED_GPIO
 #define CLI_LED_GPIO CONFIG_CLI_LED_GPIO
-#elif !defined(CLI_LED_GPIO)
-#if CONFIG_IDF_TARGET_ESP32
-#define CLI_LED_GPIO 2
-#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32H2
-#define CLI_LED_GPIO 8
-#elif CONFIG_IDF_TARGET_ESP32S3
-#define CLI_LED_GPIO 48
-#else
-#define CLI_LED_GPIO 2
-#endif
-#endif
 
 #define CLI_LED_INIT()    do { gpio_reset_pin(CLI_LED_GPIO); gpio_set_direction(CLI_LED_GPIO, GPIO_MODE_OUTPUT); gpio_set_level(CLI_LED_GPIO, 0); } while(0)
 #define CLI_LED_ON()      gpio_set_level(CLI_LED_GPIO, 1)

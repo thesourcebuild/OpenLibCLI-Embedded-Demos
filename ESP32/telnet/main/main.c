@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -21,6 +22,8 @@
 #define CLI_TELNET_PORT 2323
 
 static SemaphoreHandle_t s_ip_obtained = NULL;
+
+static void refuse_waiting_client(int listen_fd);
 
 static void on_got_ip(void *arg, esp_event_base_t base,
                       int32_t id, void *data)
@@ -127,8 +130,29 @@ void app_main(void)
       while (cli_demo_is_running() != 0U)
       {
         cli_demo_poll();
+        refuse_waiting_client(listen_fd);
         vTaskDelay(pdMS_TO_TICKS(10));
       }
+    }
+  }
+}
+
+/* A client that connects while a session runs is closed at once: it would otherwise wait,
+ * connected but unanswered, in the listen backlog until the session ends. */
+static void refuse_waiting_client(int listen_fd)
+{
+  fd_set readable;
+  struct timeval no_wait = {0};
+
+  FD_ZERO(&readable);
+  FD_SET(listen_fd, &readable);
+  if (select(listen_fd + 1, &readable, NULL, NULL, &no_wait) > 0)
+  {
+    int extra_fd = accept(listen_fd, NULL, NULL);
+    if (extra_fd >= 0)
+    {
+      close(extra_fd);
+      printf("Rejected second Telnet client.\r\n");
     }
   }
 }

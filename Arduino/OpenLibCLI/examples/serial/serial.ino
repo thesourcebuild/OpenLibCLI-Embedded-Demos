@@ -23,6 +23,11 @@
 #include <Arduino.h>
 #include <string.h>
 #include <inttypes.h>
+#if defined(USE_TINYUSB)
+/* Adafruit TinyUSB stack (RP2040 "USB Stack: Adafruit TinyUSB"): Serial comes from its
+ * library, which is linked only when the sketch includes it. */
+#include <Adafruit_TinyUSB.h>
+#endif
 
 //>! UNCOMMENT:: If you want to use your own configuration 'cli_config' present in your sketch dir.
 // Note: The use of "" instead of <> 

@@ -13,19 +13,13 @@
 #include "cli_transport_telnet.h"
 #include "cli_demo_setup.h"
 
-#ifdef CONFIG_CLI_LED_GPIO
+/* Built-in LED GPIO: menuconfig "OpenLibCLI Telnet Demo Configuration". Its default
+ * follows the target's common dev board:
+ *   ESP32 DevKitC           → GPIO2
+ *   ESP32-C3/C6/H2 DevKitM  → GPIO8
+ *   ESP32-S3 DevKitC        → GPIO48
+ */
 #define CLI_LED_GPIO CONFIG_CLI_LED_GPIO
-#elif !defined(CLI_LED_GPIO)
-#if CONFIG_IDF_TARGET_ESP32
-#define CLI_LED_GPIO 2
-#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32H2
-#define CLI_LED_GPIO 8
-#elif CONFIG_IDF_TARGET_ESP32S3
-#define CLI_LED_GPIO 48
-#else
-#define CLI_LED_GPIO 2
-#endif
-#endif
 
 #define CLI_LED_INIT()                                  \
   do                                                    \

@@ -46,4 +46,4 @@ Connect to the serial console (115200 baud) and start the CLI. Press `Ctrl+]` to
 
 ## Notes
 
-The project uses the console UART (already initialised by ESP-IDF) for the CLI transport — no separate UART configuration is needed. LED control uses the GPIO number configured in menuconfig. The `CLI_LED_GPIO` Kconfig option defaults to GPIO2 (common on ESP32 DevKitC).
+The project uses the console UART (already initialised by ESP-IDF) for the CLI transport — no separate UART configuration is needed. LED control uses the GPIO number configured in menuconfig. The `CLI_LED_GPIO` Kconfig option defaults to the target's common dev board: GPIO2 on ESP32 (DevKitC), GPIO8 on ESP32-C3/C6/H2 (DevKitM), GPIO48 on ESP32-S3 (DevKitC).
