@@ -218,6 +218,34 @@ static int8_t cmd_arithmetic(cli_struct_t *cli, const char *cmd, cli_argc_t argc
   return CLI_OK;
 }
 
+#if CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_SSCANF
+/* sscanf() neither rejects trailing text nor reports a value out of range (C leaves that
+ * conversion undefined): the operand is checked first. True for an optional sign and
+ * 1 to 10 digits whose value fits in int32_t. */
+static bool operand_fits_int32(const char *s)
+{
+  const char *digits = (*s == '+' || *s == '-') ? s + 1 : s;
+  size_t count;
+  bool ok;
+
+  while (digits[0] == '0' && digits[1] != '\0')
+  {
+    digits++; /* leading zeros do not count */
+  }
+  count = strspn(digits, "0123456789");
+  ok = (count > 0U && digits[count] == '\0');
+  if (ok && count == 10U)
+  {
+    ok = (strcmp(digits, (*s == '-') ? "2147483648" : "2147483647") <= 0);
+  }
+  else if (count > 10U)
+  {
+    ok = false;
+  }
+  return ok;
+}
+#endif
+
 /* Parse one operand with the selected backend: false when it is not a whole number in
  * the int32_t range (nothing is stored then). */
 static bool parse_operand(const char *s, int32_t *out)
@@ -229,7 +257,7 @@ static bool parse_operand(const char *s, int32_t *out)
 #elif CLI_PARSE_BACKEND == CLI_PARSE_BACKEND_STRTOL
   ok = strtol_parse_i32(s, out);
 #else
-  ok = (cli_sscanf(s, "%" SCNd32, out) == 1);
+  ok = operand_fits_int32(s) && (cli_sscanf(s, "%" SCNd32, out) == 1);
 #endif
 
   return ok;

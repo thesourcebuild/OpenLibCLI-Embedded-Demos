@@ -777,6 +777,9 @@ struct cli_s {
                                               lockout; @c CLI_AUTH_USERNAME means re-login. */
   bool auth_requested; /**< @c cli_request_auth() during a (re)start: the session begins at
                             the login prompt even without @c require_auth. */
+  bool auth_line_pending; /**< A username / password / secret line was entered and is being
+                               handled: no prompt is on screen; the prompt for what is asked
+                               next is shown once, when the line is done. */
   bool require_auth;                  /**< True when the session requires login before running
                                          commands. */
   cli_auth_fn authorization_cb;       /**< Custom auth callback; overrides the local user table. */
@@ -988,6 +991,8 @@ OPENLIBCLI_API cli_session_state_enum_t cli_get_session_state(const cli_struct_t
  * editor state, and command history are reset. Usable from a command handler
  * (the @c quit / @c exit reset policies call it); unlike @c cli_start(), a
  * pending transport write failure is kept, so a dead peer still ends the session.
+ * A login lockout that is still running is not ended (see
+ * @c cli_set_auth_failure_mode()).
  *
  * @param[in] cli  Active CLI session.
  */
@@ -1348,6 +1353,12 @@ OPENLIBCLI_API void cli_require_authorization(cli_struct_t *cli, bool require);
  * and the idle timeout is paused until the lockout ends (an idle session restart
  * would otherwise end the lockout early).
  *
+ * A lockout belongs to the line, not to the session: a session started or restarted
+ * on the same @c cli_struct_t while it is running (@c cli_start() for a reconnecting
+ * client or a reopened terminal, @c cli_restart_session()) shows its banner and waits
+ * until the lockout is over, then starts at its own login. Ending the session does not
+ * allow a new round of password guesses.
+ *
  * @param[in] cli   Active CLI session.
  * @param[in] mode  One of the @c cli_auth_failure_mode_enum_t values.
  */
@@ -1519,7 +1530,8 @@ OPENLIBCLI_API void cli_hide_command(cli_struct_t *cli, cli_cmd_handle_t handle)
  *
  * Starts a fresh logical session (banner → optional login → prompt): mode,
  * privilege, submenu navigation, line editor, history, pipe filter, login state
- * and a previous transport write failure are reset, and the idle timer restarts.
+ * and a previous transport write failure are reset, and the idle timer restarts. A
+ * login lockout that is still running is not ended (see @c cli_set_auth_failure_mode()).
  * Configuration (commands, users, callbacks, policies) is kept.
  *
  * Call it before the first @c cli_session_engine() call, and again to begin a new

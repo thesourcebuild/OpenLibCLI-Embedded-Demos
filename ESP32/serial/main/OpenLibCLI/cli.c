@@ -438,6 +438,7 @@ static bool cli_history_replay_load(cli_struct_t *cli);
 static bool cli_state_is_auth_input(const cli_struct_t *cli);
 #if CLI_ENABLE_AUTH
 static void cli_auth_reset_work(cli_struct_t *cli);
+static void cli_auth_ask_username(cli_struct_t *cli);
 static void cli_auth_prompt_username(cli_struct_t *cli);
 static bool cli_auth_lockout_expired(const cli_struct_t *cli);
 static bool cli_auth_lockout_unending(const cli_struct_t *cli);
@@ -450,6 +451,7 @@ static void cli_auth_backspace(cli_struct_t *cli);
 static void cli_auth_clear_input(cli_struct_t *cli);
 static void cli_auth_insert_char(cli_struct_t *cli, char c);
 static int8_t cli_auth_submit_line(cli_struct_t *cli);
+static int8_t cli_auth_run_callback(cli_struct_t *cli, cli_auth_fn fn);
 static int8_t cli_auth_enable_check(cli_struct_t *cli);
 static void cli_auth_enable_result(cli_struct_t *cli, int8_t ok, int8_t *rc);
 static int8_t cli_auth_handle(cli_struct_t *cli, int byte);
@@ -982,7 +984,15 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
 #endif
 
 #if CLI_ENABLE_AUTH
-      if (cli->require_auth || cli->auth_requested) {
+      if (cli->auth_state == CLI_AUTH_LOCKOUT) {
+        /* A lockout carried over from the previous session (cli_session_reset()): this
+         * session starts once it is over, at its own login (or prompt). */
+        cli->auth_resume_state =
+            (cli->require_auth || cli->auth_requested) ? CLI_AUTH_USERNAME : CLI_AUTH_NONE;
+        cli->auth_requested = False;
+        CLI_WSTR(cli, "% Too many failed attempts. Lock-Out Session.\r\n");
+        cli->session_state = CLI_SESSION_RUN;
+      } else if (cli->require_auth || cli->auth_requested) {
         cli->auth_requested = False;
         cli->auth_attempts = 0;
         cli->auth_lockout_started_ts = 0UL;
@@ -1306,7 +1316,13 @@ OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
         cli_line_buffer_emit(cli, False);
       }
 #endif
-      CLI_WSTR(cli, CLI_CRLF);
+#if CLI_ENABLE_AUTH
+      /* While a login line is handled the cursor is already on a fresh line. */
+      if (!cli->auth_line_pending)
+#endif
+      {
+        CLI_WSTR(cli, CLI_CRLF);
+      }
     }
     /* The line-ending state is kept: when 'quit' arrives with CR LF, the LF still belongs to
      * that line and must not submit an empty line to the restarted session. */
@@ -2071,6 +2087,11 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
   bool redrawn = False;
   cli_len_t saved_used = cli->exec_used;
   int8_t rc;
+
+#if CLI_ENABLE_AUTH
+  /* While a login line is handled no prompt is on screen: cli_auth_handle() shows one. */
+  on_prompt = on_prompt && !cli->auth_line_pending;
+#endif
 
   if (on_prompt) {
     CLI_WSTR(cli, CLI_CRLF);
@@ -3151,7 +3172,8 @@ static void cli_redisplay_input(cli_struct_t *cli) {
  * @param[in] cli  Active CLI session.
  */
 static void cli_input_prompt_changed(cli_struct_t *cli) {
-  if (cli->exec_depth == 0U && cli->session_state == CLI_SESSION_RUN) {
+  /* While a login line is handled, cli_auth_handle() shows the prompt once it is done. */
+  if (cli->exec_depth == 0U && cli->session_state == CLI_SESSION_RUN && !cli->auth_line_pending) {
     CLI_WSTR(cli, CLI_CRLF);
     cli_redisplay_input(cli);
   }
@@ -5255,12 +5277,22 @@ static void cli_auth_reset_work(cli_struct_t *cli) {
 }
 
 /**
+ * @brief Reset auth work buffers and ask for a username (the prompt is shown by the
+ *        caller: @c cli_auth_prompt_username(), or @c cli_auth_handle() once the line
+ *        being handled is done).
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_auth_ask_username(cli_struct_t *cli) {
+  cli_auth_reset_work(cli);
+  cli->auth_state = CLI_AUTH_USERNAME;
+}
+
+/**
  * @brief Reset auth work buffers and print the @c "Username: " prompt.
  * @param[in] cli  Active CLI session.
  */
 static void cli_auth_prompt_username(cli_struct_t *cli) {
-  cli_auth_reset_work(cli);
-  cli->auth_state = CLI_AUTH_USERNAME;
+  cli_auth_ask_username(cli);
   CLI_WSTR(cli, "Username: ");
   cli_flush(cli);
 }
@@ -5381,12 +5413,15 @@ static int8_t cli_auth_verify(cli_struct_t *cli) {
   int8_t rc = CLI_OK;
   cli_len_t match = -1;
 
-  /* Every login starts from a clean, unprivileged state. */
+  /* Every login starts from a clean, unprivileged state. The mode-change callback hears of
+   * it only when something changes (the password is still typed in at this point). */
   cli_nav_reset(cli);
-  cli_set_privilege(cli, CLI_PRIV_USER);
+  if (cli->privilege != CLI_PRIV_USER) {
+    cli_set_privilege(cli, CLI_PRIV_USER);
+  }
 
   if (cli->authorization_cb != NULL) {
-    ok = cli->authorization_cb(cli, cli->auth_username, cli->input);
+    ok = cli_auth_run_callback(cli, cli->authorization_cb);
   } else {
     /* Every entry is checked with constant-time comparisons and without stopping at a
      * match, so response time does not reveal which usernames exist or how much of a
@@ -5398,41 +5433,46 @@ static int8_t cli_auth_verify(cli_struct_t *cli) {
         match = i;
       }
     }
+    if (match >= 0) {
+      ok = CLI_OK;
+    }
   }
 
   /* The typed password is not needed any more: gone before anything reacts to the result
    * (privilege change, mode-change callback), so nothing can show or keep it. */
   cli_wipe_input(cli);
 
-  if (match >= 0) {
-    ok = CLI_OK;
-    cli_set_privilege(cli, cli->user_privileges[match]);
-  }
-
   if (cli->session_state != CLI_SESSION_RUN) {
     /* The callback restarted or stopped the session: this attempt belongs to the old one. */
   } else if (cli->auth_state != CLI_AUTH_PASSWORD) {
     /* The callback asked for a new login (cli_request_auth()). That replaces this attempt;
-     * its prompt is shown now, after the callback. */
-    cli_redisplay_input(cli);
+     * its prompt is shown when the line is done. */
   } else if (ok == CLI_OK) {
+    /* Logged in before anything reacts to it: a line a mode-change callback has redrawn
+     * shows the command prompt, not the "Password:" prompt. */
     cli->auth_state = CLI_AUTH_AUTHENTICATED;
     cli->auth_attempts = 0;
-    if (cli->privilege >= CLI_PRIV_PRIVILEGED) {
+    if (match >= 0) {
+      cli_set_privilege(cli, cli->user_privileges[match]);
+    }
+    if (cli->session_state == CLI_SESSION_RUN && cli->auth_state == CLI_AUTH_AUTHENTICATED &&
+        cli->privilege >= CLI_PRIV_PRIVILEGED) {
       /* Privileged exec is this login's floor: no level to 'exit' back to. */
       cli->mode = CLI_MODE_ENABLE;
       cli_notify_mode_change(cli);
     }
     rc = CLI_OK;
   } else {
-    cli_set_privilege(cli, CLI_PRIV_USER); /* Never keep what a rejecting callback granted. */
+    if (cli->privilege != CLI_PRIV_USER) {
+      cli_set_privilege(cli, CLI_PRIV_USER); /* Never keep what a rejecting callback granted. */
+    }
     cli->auth_attempts++;
     CLI_WSTR(cli, "% Authentication failed.\r\n");
 
     if (cli->auth_attempts >= CLI_AUTH_MAX_ATTEMPTS) {
       rc = cli_auth_limit_reached(cli, CLI_AUTH_USERNAME);
     } else {
-      cli_auth_prompt_username(cli);
+      cli_auth_ask_username(cli);
       rc = CLI_OK;
     }
   }
@@ -5476,35 +5516,22 @@ static cli_len_t cli_auth_input_limit(const cli_struct_t *cli) {
 static int8_t cli_auth_submit_line(cli_struct_t *cli) {
   int8_t rc = CLI_OK;
 
+  /* What is asked for next is shown by cli_auth_handle() once the line is done. */
   if (cli->auth_state == CLI_AUTH_USERNAME && cli->input_len == 0) {
     /* Enter alone is not a login attempt (it is how a user checks that the line is
      * alive): ask for the username again, as login(1) does. */
-    cli_auth_prompt_username(cli);
+    cli_auth_ask_username(cli);
 
   } else if (cli->auth_state == CLI_AUTH_USERNAME) {
     (void)cli_strlcpy(cli->auth_username, cli->input, sizeof(cli->auth_username));
     cli_reset_input(cli);
     cli->auth_state = CLI_AUTH_PASSWORD;
-    CLI_WSTR(cli, "Password: ");
-    cli_flush(cli);
 
-  } else if (cli->auth_state == CLI_AUTH_PASSWORD ||
-             cli->auth_state == CLI_AUTH_ENABLE_MODE_PASSWORD) {
-    bool outermost;
+  } else if (cli->auth_state == CLI_AUTH_PASSWORD) {
+    rc = cli_auth_verify(cli); /* wipes the typed password */
 
-    /* A credential check runs like a command: what a callback it runs or triggers (the
-     * authorization / enable callback, the mode-change callback) prints is command output,
-     * a prompt change it causes (cli_request_auth()) is shown after it, and a cli_exec() it
-     * makes goes after the typed secret and shows no prompt of its own; the prompt for the
-     * result follows once. */
-    cli->exec_used = cli->input_len + 1;
-    outermost = cli_command_begin(cli);
-    if (cli->auth_state == CLI_AUTH_PASSWORD) {
-      rc = cli_auth_verify(cli);
-    } else {
-      rc = cli_auth_enable_check(cli);
-    }
-    cli_command_end(cli, outermost);
+  } else if (cli->auth_state == CLI_AUTH_ENABLE_MODE_PASSWORD) {
+    rc = cli_auth_enable_check(cli); /* wipes the typed secret */
 
   } else {
     /* To silence MISRA */
@@ -5514,8 +5541,31 @@ static int8_t cli_auth_submit_line(cli_struct_t *cli) {
 }
 
 /**
- * @brief Check the typed enable secret and apply the result (inside the credential check's
- *        command scope, @c cli_auth_submit_line()).
+ * @brief Run a credential check callback (login or enable secret) like a command.
+ *
+ * Output it prints is finished properly, and a prompt change it causes
+ * (@c cli_request_auth()) is shown after it rather than in the middle. The typed secret
+ * occupies the editor's line, so a @c cli_exec() it makes is placed after it.
+ *
+ * @param[in] cli  Active CLI session.
+ * @param[in] fn   Callback; receives the username and the typed secret.
+ *
+ * @return The callback's result.
+ */
+static int8_t cli_auth_run_callback(cli_struct_t *cli, cli_auth_fn fn) {
+  bool outermost;
+  int8_t ok;
+
+  cli->exec_used = cli->input_len + 1;
+  outermost = cli_command_begin(cli);
+  ok = fn(cli, cli->auth_username, cli->input);
+  cli_command_end(cli, outermost);
+
+  return ok;
+}
+
+/**
+ * @brief Check the typed enable secret, wipe it and apply the result.
  *
  * @param[in] cli  Active CLI session.
  *
@@ -5526,7 +5576,7 @@ static int8_t cli_auth_enable_check(cli_struct_t *cli) {
   int8_t ok;
 
   if (cli->enable_privilege_cb != NULL) {
-    ok = cli->enable_privilege_cb(cli, cli->auth_username, cli->input);
+    ok = cli_auth_run_callback(cli, cli->enable_privilege_cb);
   } else {
     ok = cli_secret_equal(cli->input, cli->enable_privilege_secret, CLI_MAX_ENABLE_SECRET_LEN)
              ? CLI_OK
@@ -5538,8 +5588,7 @@ static int8_t cli_auth_enable_check(cli_struct_t *cli) {
     /* The callback restarted or stopped the session: nothing of this attempt is shown. */
   } else if (cli->auth_state != CLI_AUTH_ENABLE_MODE_PASSWORD) {
     /* The callback asked for something else instead (cli_request_auth(): a new login).
-     * That replaces this attempt; its prompt is shown now, after the callback. */
-    cli_redisplay_input(cli);
+     * That replaces this attempt; its prompt is shown when the line is done. */
   } else {
     cli->auth_state = cli->auth_resume_state;
     cli_auth_enable_result(cli, ok, &rc);
@@ -5593,17 +5642,21 @@ static int8_t cli_auth_handle(cli_struct_t *cli, int byte) {
       int8_t exec_rc;
 
       CLI_WSTR(cli, CLI_CRLF);
+      /* Until the line is done no prompt is on screen: what callbacks print or run while
+       * it is handled (cli_exec(), cli_request_auth()) shows none of its own. */
+      cli->auth_line_pending = True;
       exec_rc = cli_auth_submit_line(cli);
+      cli->auth_line_pending = False;
 
       if (exec_rc == CLI_ERR_AUTH) {
         cli->session_state = CLI_SESSION_STOP;
         rc = CLI_ERR_AUTH;
       } else if (cli->session_state != CLI_SESSION_RUN) {
         /* A callback restarted or stopped the session: the banner (or nothing) follows. */
-      } else if (cli->auth_state == CLI_AUTH_NONE || cli->auth_state == CLI_AUTH_AUTHENTICATED) {
-        cli_show_prompt(cli);
       } else {
-        /* To silence MISRA */
+        /* The prompt for what is asked next, once: the command prompt, "Username:",
+         * "Password:", or nothing during a lockout. */
+        cli_redisplay_input(cli);
       }
     } break;
 
@@ -5718,10 +5771,18 @@ static void cli_session_reset(cli_struct_t *cli) {
     cli->out_open = False;
   }
 #if CLI_ENABLE_AUTH
-  cli->auth_state = CLI_AUTH_NONE;
+  /* A lockout that is still running belongs to the line, not to the session: a new session
+   * (a reconnect, a terminal that reopens the port) must not end it early, or every
+   * restart would allow a fresh round of password guesses. The new session waits it out
+   * (see the session start); its identity starts empty all the same. */
+  if (cli->auth_state == CLI_AUTH_LOCKOUT && !cli_auth_lockout_expired(cli)) {
+    /* Kept: auth_state and auth_lockout_started_ts. */
+  } else {
+    cli->auth_state = CLI_AUTH_NONE;
+    cli->auth_lockout_started_ts = 0UL;
+  }
   cli->auth_attempts = 0;
   cli->enable_attempts = 0;
-  cli->auth_lockout_started_ts = 0UL;
   cli_auth_reset_work(cli);
 #endif
 }
@@ -5798,7 +5859,7 @@ static int8_t cli_nav_push(cli_struct_t *cli) {
 /**
  * @brief Number of @c nav_floor entries in use: one per running command.
  *
- * Login checks and their callbacks also count as running (@c cli_command_begin()) without
+ * Login / enable-secret callbacks also count as running (@c cli_auth_run_callback()) without
  * going through the @c CLI_MAX_EXEC_DEPTH check of @c cli_exec(), so the count is bounded
  * by the size of the arrays as well.
  *
