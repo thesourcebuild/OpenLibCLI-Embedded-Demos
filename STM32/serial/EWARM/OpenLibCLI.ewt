@@ -1809,30 +1809,33 @@
                     <group>
                         <name>config</name>
                         <file>
-                            <name>$PROJ_DIR$\..\Core\Src\cli\config\cli_config.h</name>
+                            <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\config\cli_config.h</name>
                         </file>
                     </group>
                     <group>
                         <name>utils</name>
                         <file>
-                            <name>$PROJ_DIR$\..\Core\Src\cli\utils\cli_args_parse.c</name>
+                            <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\utils\cli_args_parse.c</name>
                         </file>
                         <file>
-                            <name>$PROJ_DIR$\..\Core\Src\cli\utils\cli_args_parse.h</name>
+                            <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\utils\cli_args_parse.h</name>
                         </file>
                     </group>
                     <file>
-                        <name>$PROJ_DIR$\..\Core\Src\cli\cli.c</name>
+                        <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\cli.c</name>
                     </file>
                     <file>
-                        <name>$PROJ_DIR$\..\Core\Src\cli\cli.h</name>
+                        <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\cli.h</name>
                     </file>
                     <file>
-                        <name>$PROJ_DIR$\..\Core\Src\cli\cli_env_detect.h</name>
+                        <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\cli_env_detect.h</name>
                     </file>
                     <file>
-                        <name>$PROJ_DIR$\..\Core\Src\cli\cli_version.h</name>
+                        <name>$PROJ_DIR$\..\Core\Src\OpenLibCLI\cli_version.h</name>
                     </file>
+                    <configuration>
+                        <name>OpenLibCLI</name>
+                    </configuration>
                 </group>
                 <file>
                     <name>$PROJ_DIR$\..\Core\Src\cli_demo_setup.c</name>

@@ -22,6 +22,9 @@ typedef struct {
   uint8_t state;
   uint8_t verb;
   uint16_t sb_len; /* bytes consumed in the current sub-negotiation */
+  uint8_t sb_buf[5]; /* its start: option and the NAWS window size (width, height) */
+  uint16_t window_width; /* client window width (NAWS), 0 until reported */
+  cli_struct_t *cli;     /* session told about window size changes, or NULL */
   bool negotiated;
   bool local_echo;
   bool local_sga;
@@ -45,6 +48,10 @@ void cli_transport_telnet_attach(cli_telnet_ctx_t *ctx, struct tcp_pcb *client_p
 void cli_transport_telnet_init(cli_telnet_ctx_t *ctx, cli_transport_struct_t *transport);
 
 void cli_transport_telnet_negotiate(cli_telnet_ctx_t *ctx);
+
+/* Tell a CLI session the client's window width (NAWS), now and after each resize, for the
+ * line editor (cli_set_terminal_width()). Call after cli_init(); NULL stops it. */
+void cli_transport_telnet_set_session(cli_telnet_ctx_t *ctx, cli_struct_t *cli);
 
 /* Close the client connection (if any) and free the input still queued. */
 void cli_transport_telnet_close(cli_telnet_ctx_t *ctx);

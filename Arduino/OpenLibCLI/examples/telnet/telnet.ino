@@ -66,6 +66,8 @@
 /** @brief Fallback built-in LED pin for boards that do not define LED_BUILTIN. */
 #if defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
   #define LED_PIN PA5   // STM32 Nucleo F103RB: LED on GPIOA pin 5
+#elif (defined(ESP32) || defined(ARDUINO_ARCH_ESP32)) && defined(LED_BUILTIN)
+  #define LED_PIN LED_BUILTIN // the board's LED; digitalWrite() also drives an RGB one (S3/C3/C6 DevKits)
 #elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   #define LED_PIN 2    // ESP32/ESP8266 Dev Module: LED on GPIO2
 #else
@@ -102,6 +104,7 @@
 #define CLI_TELNET_KEEPALIVE_COUNT 3
 #endif
 
+/* Time a WiFi connection attempt is given before the next one starts. */
 #define CLI_WIFI_CONNECT_TIMEOUT_MS 15000UL
 
 #define CLI_STATS_PERIOD_MS 1000UL
@@ -142,7 +145,9 @@ typedef struct {
 static WiFiServer s_telnet_server((uint16_t)CLI_TELNET_PORT);
 static WiFiClient s_telnet_client;
 static bool s_client_active = false;
-static bool s_server_started = false; /* WiFi connected and the server listening */
+static bool s_server_started = false; /* WiFi connected once and the server listening */
+static bool s_wifi_connected = false;  /* as last seen by wifi_service() */
+static uint32_t s_wifi_attempt_ms = 0; /* when the current connection attempt started */
 
 static demo_app_data_t s_app;
 static cli_struct_t s_cli;
@@ -158,7 +163,8 @@ static uint32_t s_last_stats_ms = 0;
 /*=======================================================================================
  * Private Function Prototypes
  *=======================================================================================*/
-static bool wifi_connect_blocking(void);
+static void wifi_begin(bool retry);
+static void wifi_service(void);
 
 static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
 static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
@@ -199,22 +205,16 @@ void setup(void) {
   Serial.println("OpenLibCLI Arduino Telnet demo");
   Serial.println("Connecting WiFi...");
 
-  if (!wifi_connect_blocking()) {
-    Serial.println("WiFi connection failed. Check CLI_WIFI_SSID / CLI_WIFI_PASSWORD.");
-  } else {
-    s_telnet_server.begin();
-    s_server_started = true;
-    Serial.print("WiFi connected. IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("Telnet server listening on port ");
-    Serial.println((uint16_t)CLI_TELNET_PORT);
-  }
+  WiFi.mode(WIFI_STA);
+  wifi_begin(false); /* loop() starts the server once it is connected */
 }
 
 void loop(void) {
   WiFiClient incoming;
 
-  /* Without WiFi the server was never started: there is nothing to accept or serve. */
+  wifi_service();
+
+  /* Until WiFi first connects the server is not started: there is nothing to accept. */
   if (s_server_started) {
     /* accept() on the cores that have it (ESP32 core 3 deprecates available() for it). */
 #if defined(ARDUINO_ARCH_RP2040) || (defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
@@ -271,44 +271,50 @@ void loop(void) {
  * Private Functions
  *=======================================================================================*/
 
-static bool wifi_connect_blocking(void) {
-  uint32_t start_ms;
-  int8_t retries = 0;
-
-  WiFi.mode(WIFI_STA);
-  delay(100);
-
-  do {
-    if (retries > 0) {
-      Serial.print("Retry ");
-      Serial.print(retries);
-      Serial.println("...");
-      WiFi.disconnect();
-      delay(500);
-      WiFi.mode(WIFI_STA);
-      delay(100);
-    }
-
-    WiFi.begin(CLI_WIFI_SSID, CLI_WIFI_PASSWORD);
-    start_ms = (uint32_t)millis();
-
-    while (WiFi.status() != WL_CONNECTED) {
-      if (((uint32_t)millis() - start_ms) >= CLI_WIFI_CONNECT_TIMEOUT_MS) {
-        break;
-      }
-      delay(250);
-    }
-
-    retries++;
-  } while (WiFi.status() != WL_CONNECTED && retries < 5);
-
-  bool connected = (WiFi.status() == WL_CONNECTED);
-  if (!connected) {
-    Serial.print("WiFi status code: ");
-    Serial.println((int)WiFi.status());
+/* Start a WiFi connection attempt; a retry first drops what is left of the last one. */
+static void wifi_begin(bool retry) {
+  if (retry) {
+    WiFi.disconnect();
   }
+#if defined(ARDUINO_ARCH_RP2040)
+  /* begin() would also wait for the address. The join itself still waits for the
+   * association (up to the core's WiFi timeout): this core has no other way to join. */
+  (void)WiFi.beginNoBlock(CLI_WIFI_SSID, CLI_WIFI_PASSWORD);
+#else
+  (void)WiFi.begin(CLI_WIFI_SSID, CLI_WIFI_PASSWORD); /* returns at once; connects in the background */
+#endif
+  s_wifi_attempt_ms = (uint32_t)millis();
+}
 
-  return connected;
+/* Keep WiFi up without holding loop(): start the Telnet server once the first connection
+ * is up (it stays listening on any address across reconnects), and start a new attempt
+ * whenever the connection has been down for CLI_WIFI_CONNECT_TIMEOUT_MS. */
+static void wifi_service(void) {
+  bool connected = (WiFi.status() == WL_CONNECTED);
+
+  if (connected != s_wifi_connected) {
+    s_wifi_connected = connected;
+    if (connected) {
+      Serial.print("WiFi connected. IP: ");
+      Serial.println(WiFi.localIP());
+      if (!s_server_started) {
+        s_telnet_server.begin();
+        s_server_started = true;
+        Serial.print("Telnet server listening on port ");
+        Serial.println((uint16_t)CLI_TELNET_PORT);
+      }
+    } else {
+      Serial.println("WiFi connection lost, reconnecting...");
+      s_wifi_attempt_ms = (uint32_t)millis(); /* give the core's own rejoin its time first */
+    }
+  } else if (!connected && ((uint32_t)millis() - s_wifi_attempt_ms) >= CLI_WIFI_CONNECT_TIMEOUT_MS) {
+    Serial.print("WiFi not connected (status code ");
+    Serial.print((int)WiFi.status());
+    Serial.println("), retrying. Check CLI_WIFI_SSID / CLI_WIFI_PASSWORD.");
+    wifi_begin(true);
+  } else {
+    /* Connected, or the current attempt still has time. */
+  }
 }
 
 
@@ -355,8 +361,10 @@ static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, co
 
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
   ESP.restart();
+#elif defined(ARDUINO_ARCH_MBED)
+  NVIC_SystemReset(); /* mbed cores (also the mbed RP2040 one, which defines ARDUINO_ARCH_RP2040) */
 #elif defined(ARDUINO_ARCH_RP2040)
-  rp2040.reboot();
+  rp2040.reboot(); /* Arduino-Pico core */
 #elif defined(ARDUINO_ARCH_RP2350) || defined(ARDUINO_ARCH_STM32) || defined(__arm__)
   NVIC_SystemReset();
 #else
@@ -461,6 +469,7 @@ static void cli_register_commands(cli_struct_t *cli) {
   if (cli->ansi_supported == true) {
     h_clear = cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("clear"), cli_cmd_builtin_clear_screen,
                               CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Clear screen"));
+    (void)h_clear; /* used only for the alias */
 
 #if CLI_ENABLE_ALIASES
     cli_cmd_add_alias(cli, h_clear, "cls");
@@ -504,6 +513,8 @@ static void cli_telnet_demo_setup(void *client_handle) {
 #endif
 
     cli_init(&s_cli, "router", &s_transport, &platform, s_cmd_pool, (sizeof(s_cmd_pool) / sizeof(s_cmd_pool[0])));
+    /* The client's window width (NAWS) goes to the line editor, also after a resize. */
+    cli_transport_telnet_set_session(&s_telnet_ctx, &s_cli);
 
 	// Arduino Serial Monitor is a dumb terminal no (ANSI/VT100) support
 	// Uncomment the below line

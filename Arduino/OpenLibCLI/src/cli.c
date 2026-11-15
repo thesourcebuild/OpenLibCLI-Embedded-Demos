@@ -69,10 +69,11 @@
 #error "CLI_MAX_EXEC_DEPTH must be in the range 1..255"
 #endif
 
-#if CLI_ENABLE_AUTH && ((CLI_MAX_USERNAME_LEN >= CLI_MAX_INPUT_LEN) ||                           \
-                        (CLI_MAX_PASSWORD_LEN >= CLI_MAX_INPUT_LEN) ||                           \
-                        (CLI_MAX_ENABLE_SECRET_LEN >= CLI_MAX_INPUT_LEN))
-#error "CLI_MAX_USERNAME_LEN, CLI_MAX_PASSWORD_LEN and CLI_MAX_ENABLE_SECRET_LEN must be smaller than CLI_MAX_INPUT_LEN"
+#if CLI_ENABLE_AUTH &&                                                                             \
+    ((CLI_MAX_USERNAME_LEN >= CLI_MAX_INPUT_LEN) || (CLI_MAX_PASSWORD_LEN >= CLI_MAX_INPUT_LEN) || \
+     (CLI_MAX_ENABLE_SECRET_LEN >= CLI_MAX_INPUT_LEN))
+#error                                                                                             \
+    "CLI_MAX_USERNAME_LEN, CLI_MAX_PASSWORD_LEN and CLI_MAX_ENABLE_SECRET_LEN must be smaller than CLI_MAX_INPUT_LEN"
 #endif
 
 #if CLI_MAX_ARGS < 2
@@ -88,7 +89,8 @@
 #endif
 
 #if (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK) && !CLI_ENABLE_TIME_SOURCE
-#error "CLI_ENABLE_IDLE_TIMEOUT and CLI_ENABLE_PERIODIC_CALLBACK need a clock: leave CLI_ENABLE_TIME_SOURCE at its default (derived from them) or disable both features"
+#error                                                                                             \
+    "CLI_ENABLE_IDLE_TIMEOUT and CLI_ENABLE_PERIODIC_CALLBACK need a clock: leave CLI_ENABLE_TIME_SOURCE at its default (derived from them) or disable both features"
 #endif
 
 /*=======================================================================================
@@ -105,6 +107,9 @@
 #define ESC_STATE_CSI_FKEY   (uint8_t)7 /**< ESC '[' '[': Linux console F1-F5; key code next. */
 
 #define ESC_PARAM_MAX 9999 /**< Saturation limit for the accumulated CSI parameter. */
+
+#define CLI_USERNAME_PROMPT "Username: " /**< Login prompt; the typed name follows it. */
+#define CLI_PASSWORD_PROMPT "Password: " /**< Password / enable secret prompt. */
 
 /* Misc Limits --------------------------------------------------------------------------*/
 #define CLI_AUTH_MAX_ATTEMPTS 3   /**< Failed login / enable attempts before the failure mode. */
@@ -188,6 +193,14 @@
     cli_print_process_stream((cli), "\n", 1);                                                      \
   } while (0)
 
+/**
+ * @brief Print an engine error line for the command line being run (see @c cli_diag()).
+ *
+ * @param[in] cli  Active CLI session.
+ * @param[in] s    String literal with its "% " prefix, without a line ending.
+ */
+#define CLI_DIAG(cli, s) cli_diag((cli), CMD_STR(s), NULL, NULL)
+
 #define CLI_CMD_IS_IN_USE(cmd_)  ((((cmd_)->flags) & CLI_CMD_FLAG_IN_USE) != 0U)
 #define CLI_CMD_IS_HIDDEN(cmd_)  ((((cmd_)->flags) & CLI_CMD_FLAG_HIDDEN) != 0U)
 #define CLI_CMD_SET_IN_USE(cmd_) ((cmd_)->flags = (uint8_t)((cmd_)->flags | CLI_CMD_FLAG_IN_USE))
@@ -270,11 +283,15 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli);
 /* Output Line Processing ---------------------------------------------------------------*/
 
 #if CLI_HAS_LINE_BUFFER
-static void cli_print_emit(cli_struct_t *cli, const char *line);
+static void cli_print_emit(cli_struct_t *cli, const char *line, bool line_continues);
+#if CLI_ENABLE_PIPE_FILTER
+static cli_len_t cli_filter_overlap(const cli_struct_t *cli);
+#endif
 static void cli_line_buffer_emit(cli_struct_t *cli, bool line_continues);
 #endif
 static void cli_print_process_stream(cli_struct_t *cli, const char *data, int len);
 static void cli_output_end_line(cli_struct_t *cli);
+static void cli_diag(cli_struct_t *cli, const char *msg, const char *arg, const char *tail);
 #if !defined(__AVR__) && !defined(ARDUINO_ARCH_AVR)
 static void cli_print_str(cli_struct_t *cli, const char *s);
 #endif
@@ -292,8 +309,17 @@ static void cli_kill_line(cli_struct_t *cli);
 static void cli_kill_word(cli_struct_t *cli);
 static void cli_clear_input(cli_struct_t *cli);
 static void cli_redisplay_input(cli_struct_t *cli);
+#if CLI_ENABLE_LINE_WRAP
+static bool cli_wrap_aware(const cli_struct_t *cli);
+static void cli_cursor_step(cli_struct_t *cli, uint32_t from, uint32_t to, char back, char fwd);
+static void cli_cursor_settle(cli_struct_t *cli, cli_len_t pos);
+static void cli_term_width_query(cli_struct_t *cli);
+#endif
+static void cli_cursor_goto(cli_struct_t *cli, cli_len_t from, cli_len_t to);
+static void cli_input_newline(cli_struct_t *cli);
 #if CLI_ENABLE_AUTH
-static void cli_input_prompt_changed(cli_struct_t *cli);
+static bool cli_prompt_change_now(const cli_struct_t *cli);
+static void cli_show_username_prompt(cli_struct_t *cli);
 #endif
 
 /* AVR PROGMEM Helpers ------------------------------------------------------------------*/
@@ -309,6 +335,9 @@ static size_t cli_strlcpy_P(char *dst, const char *src_P, size_t size);
 static size_t cli_strlcpy(char *dst, const char *src, size_t size);
 static size_t cli_text_len(const char *src, bool progmem);
 static void cli_text_copy(char *dst, const char *src, size_t size, bool progmem);
+#if CLI_ENABLE_PRINT_TRANSPORT_CB
+static char cli_text_at(const char *s, size_t i, bool progmem);
+#endif
 static bool cli_case_prefix_match(const char *str, const char *prefix);
 static bool cli_case_equal(const char *a, const char *b);
 #if CLI_ENABLE_AUTH
@@ -374,8 +403,7 @@ static bool cli_name_taken(const cli_struct_t *cli, cli_cmd_handle_t parent, cli
 static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t parent,
                                              const char *name, bool name_progmem,
                                              cli_cmd_handler_fn callback, cli_priv_t privilege,
-                                             cli_mode_t mode, const char *help,
-                                             bool help_progmem);
+                                             cli_mode_t mode, const char *help, bool help_progmem);
 static void cli_foreach_match(cli_struct_t *cli, const char *prefix, cli_cmd_handle_t parent,
                               bool with_root, cli_match_cb_t cb, void *ctx);
 static int8_t cli_resolve_one(cli_struct_t *cli, const char *word, cli_cmd_handle_t parent,
@@ -496,9 +524,8 @@ OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli) {
                         CLI_MODE_ANY, CLI_STR("Quit session")) != CLI_CMD_INVALID) &&
        ok;
 
-  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("enable"), cli_cmd_builtin_enable,
-                        CLI_PRIV_USER, CLI_MODE_EXEC,
-                        CLI_STR("Activate Privileged mode")) != CLI_CMD_INVALID) &&
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("enable"), cli_cmd_builtin_enable, CLI_PRIV_USER,
+                        CLI_MODE_EXEC, CLI_STR("Activate Privileged mode")) != CLI_CMD_INVALID) &&
        ok;
 
   ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("disable"), cli_cmd_builtin_disable,
@@ -506,9 +533,8 @@ OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli) {
                         CLI_STR("Leave Privileged mode")) != CLI_CMD_INVALID) &&
        ok;
 
-  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("end"), cli_cmd_builtin_end,
-                        CLI_PRIV_PRIVILEGED, CLI_MODE_CONFIG,
-                        CLI_STR("Return to exec")) != CLI_CMD_INVALID) &&
+  ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("end"), cli_cmd_builtin_end, CLI_PRIV_PRIVILEGED,
+                        CLI_MODE_CONFIG, CLI_STR("Return to exec")) != CLI_CMD_INVALID) &&
        ok;
 
   ok = (cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("configure"), cli_cmd_builtin_configure,
@@ -541,7 +567,8 @@ OPENLIBCLI_API int8_t cli_add_builtin_cmds(cli_struct_t *cli) {
   ok = (h_usage != CLI_CMD_INVALID) && ok;
 
   ok = (cli_add_command(cli, h_usage, CLI_STR("commands"), cli_cmd_builtin_usage_commands,
-                        CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Usage Commands")) != CLI_CMD_INVALID) &&
+                        CLI_PRIV_USER, CLI_MODE_ANY,
+                        CLI_STR("Usage Commands")) != CLI_CMD_INVALID) &&
        ok;
   ok = (cli_add_command(cli, h_usage, CLI_STR("keys"), cli_cmd_builtin_usage_keys, CLI_PRIV_USER,
                         CLI_MODE_ANY, CLI_STR("Usage Keys")) != CLI_CMD_INVALID) &&
@@ -666,10 +693,17 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_enable(cli_struct_t *cli, const char *cmd,
 #if CLI_ENABLE_AUTH
     /* Secret required — the session engine routes the next line to the password handler */
     else {
+      bool show_now = cli_prompt_change_now(cli);
+
+      if (show_now) {
+        cli_input_newline(cli); /* below the line on screen */
+      }
       cli->auth_resume_state = cli->auth_state;
       cli_reset_input(cli);
       cli->auth_state = CLI_AUTH_ENABLE_MODE_PASSWORD;
-      cli_input_prompt_changed(cli);
+      if (show_now) {
+        cli_redisplay_input(cli);
+      }
     }
 #endif
   }
@@ -722,7 +756,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_configure(cli_struct_t *cli, const char *c
   if (cli != NULL) {
     rc = cli_set_mode(cli, CLI_MODE_CONFIG);
     if (rc != CLI_OK) {
-      CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+      CLI_DIAG(cli, "% Navigation depth limit reached.");
     }
   }
 
@@ -753,14 +787,14 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_history(cli_struct_t *cli, const char *cmd
     if (argc > 1) {
       if (argc > 2 || !parse_u32(argv[1], &n_val) || n_val == 0U ||
           n_val > (uint32_t)cli->history_count) {
-        CLI_WSTR(cli, "% Invalid history index.\r\n");
+        CLI_DIAG(cli, "% Invalid history index.");
         rc = CLI_ERR;
       } else {
         /* Only record the request: when this command was typed (or run by cli_exec() from
          * outside any command), the entry is loaded into the free line editor once it has
          * finished; a 'history N' run from inside another command is discarded. */
-        cli->history_replay = cli_history_index(
-            cli, (cli_history_idx_t)((uint32_t)cli->history_count - n_val + 1U));
+        cli->history_replay =
+            cli_history_index(cli, (cli_history_idx_t)((uint32_t)cli->history_count - n_val + 1U));
         rc = CLI_EXEC_REPLAY_INPUT;
       }
     } else
@@ -807,10 +841,10 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_help(cli_struct_t *cli, const char *cmd, c
         if (r == CLI_OK) {
           parent = h;
         } else if (r == CLI_ERR) {
-          CLI_WSTR(cli, "% Unknown command.\r\n");
+          CLI_DIAG(cli, "% Unknown command.");
           rc = CLI_ERR;
         } else {
-          CLI_WSTR(cli, "% Ambiguous command.\r\n");
+          CLI_DIAG(cli, "% Ambiguous command.");
           rc = CLI_ERR_AMBIG;
         }
       }
@@ -845,7 +879,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_clear_screen(cli_struct_t *cli, const char
     if (cli->ansi_supported) {
       CLI_WSTR(cli, "\x1b"
                     "[2J\x1b"
-                    "[H");
+                    "[3J\x1b[H");
     } else {
       CLI_PRINTLN_STR(cli, "Clear not supported on Non-ANSI/VT100 Terminals");
     }
@@ -978,6 +1012,11 @@ OPENLIBCLI_API int8_t cli_session_engine(cli_struct_t *cli) {
     } else if (cli->session_state == CLI_SESSION_INIT) {
       cli->session_state = CLI_SESSION_SHOW_BANNER;
     } else if (cli->session_state == CLI_SESSION_SHOW_BANNER) {
+#if CLI_ENABLE_LINE_WRAP
+      /* A new session may be another terminal (a reconnect, a reopened port): its width is
+       * asked for (the reply arrives as input). */
+      cli_term_width_query(cli);
+#endif
 #if CLI_ENABLE_BANNER
       if (cli->banner[0] != '\0') {
         CLI_WSTR(cli, CLI_CRLF);
@@ -1324,7 +1363,7 @@ OPENLIBCLI_API void cli_restart_session(cli_struct_t *cli) {
       if (!cli->auth_line_pending)
 #endif
       {
-        CLI_WSTR(cli, CLI_CRLF);
+        cli_input_newline(cli);
       }
     }
     /* The line-ending state is kept: when 'quit' arrives with CR LF, the LF still belongs to
@@ -1342,6 +1381,14 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli) {
        * after the banner. */
       cli->auth_requested = True;
     } else {
+      /* A lockout that is still running is not ended early (as for a new session): the
+       * login is asked for once it is over. Nothing is on screen during it. */
+      bool locked = (cli->auth_state == CLI_AUTH_LOCKOUT && !cli_auth_lockout_expired(cli));
+      bool show_now = !locked && cli_prompt_change_now(cli);
+
+      if (show_now) {
+        cli_input_newline(cli); /* below the line on screen */
+      }
       /* Nothing from the current identity survives into the next login. */
       cli_nav_reset(cli);
       cli_set_privilege(cli, CLI_PRIV_USER);
@@ -1351,14 +1398,14 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli) {
       cli->auth_attempts = 0;
       cli->enable_attempts = 0;
       cli_auth_reset_work(cli);
-      if (cli->auth_state == CLI_AUTH_LOCKOUT && !cli_auth_lockout_expired(cli)) {
-        /* A lockout that is still running is not ended early (as for a new session): the
-         * login is asked for once it is over. */
+      if (locked) {
         cli->auth_resume_state = CLI_AUTH_USERNAME;
       } else {
         cli->auth_lockout_started_ts = 0UL;
         cli->auth_state = CLI_AUTH_USERNAME;
-        cli_input_prompt_changed(cli);
+        if (show_now) {
+          cli_redisplay_input(cli);
+        }
       }
     }
 #else
@@ -1373,6 +1420,32 @@ OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled) {
   if (cli != NULL) {
     cli->ansi_supported = enabled;
   }
+}
+
+OPENLIBCLI_API void cli_set_terminal_width(cli_struct_t *cli, uint16_t columns) {
+#if CLI_ENABLE_LINE_WRAP
+  if (cli != NULL) {
+    cli->term_width = columns;
+    cli->term_width_query = False; /* this width replaces what a pending reply would set */
+  }
+#else
+  (void)cli;
+  (void)columns;
+#endif
+}
+
+OPENLIBCLI_API uint16_t cli_get_terminal_width(const cli_struct_t *cli) {
+  uint16_t columns = 0U;
+
+#if CLI_ENABLE_LINE_WRAP
+  if (cli != NULL) {
+    columns = cli->term_width;
+  }
+#else
+  (void)cli;
+#endif
+
+  return columns;
 }
 
 OPENLIBCLI_API int8_t cli_set_hostname(cli_struct_t *cli, const char *hostname) {
@@ -1809,6 +1882,13 @@ OPENLIBCLI_API int8_t cli_remove_command(cli_struct_t *cli, cli_cmd_handle_t han
         cli->cmd_pool[i].parent = CLI_CMD_INVALID;
       }
     }
+    /* A running command that is removed must not be taken for the one registered next in
+     * its slot when it finishes. */
+    for (uint8_t k = 0U; k < cli_nav_floors_active(cli); k++) {
+      if (cli->exec_cmd[k] == handle) {
+        cli->exec_cmd[k] = CLI_CMD_INVALID;
+      }
+    }
 
     (void)memset(&cli->cmd_pool[handle], 0, sizeof(cli->cmd_pool[handle]));
     if (cli->cmd_pool_count > 0) {
@@ -2062,7 +2142,7 @@ static int8_t cli_exec_area(cli_struct_t *cli, char **area, size_t *size) {
 
   if (cli->exec_depth >= (uint8_t)CLI_MAX_EXEC_DEPTH) {
     /* Also stops a handler that (indirectly) runs itself from recursing without bound. */
-    CLI_WSTR(cli, "% Command nesting too deep.\r\n");
+    CLI_DIAG(cli, "% Command nesting too deep.");
     rc = CLI_ERR;
   } else if (base < (cli_len_t)CLI_MAX_INPUT_LEN) {
     *area = &cli->input[base];
@@ -2103,7 +2183,7 @@ static int8_t cli_exec_area_run(cli_struct_t *cli, char *line, size_t len) {
 #endif
 
   if (on_prompt) {
-    CLI_WSTR(cli, CLI_CRLF);
+    cli_input_newline(cli);
   }
 
   cli->exec_used = (cli_len_t)(line - cli->input) + (cli_len_t)len + 1;
@@ -2288,7 +2368,7 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...) {
       {
         /* Outside a command the cursor may sit on the prompt line: start a new line. */
         if (!in_command) {
-          CLI_WSTR(cli, CLI_CRLF);
+          cli_input_newline(cli);
         }
         cli_write_str(cli, buf);
         CLI_WSTR(cli, CLI_CRLF);
@@ -2419,6 +2499,29 @@ static void cli_text_copy(char *dst, const char *src, size_t size, bool progmem)
 #endif
 }
 
+#if CLI_ENABLE_PRINT_TRANSPORT_CB
+/**
+ * @brief Read character @p i of a string in RAM or (on AVR, @p progmem) in flash.
+ *
+ * @param[in] s        String.
+ * @param[in] i        Index (at most its length).
+ * @param[in] progmem  @c true when @p s is in flash.
+ *
+ * @return The character.
+ */
+static char cli_text_at(const char *s, size_t i, bool progmem) {
+#if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
+  char c = progmem ? (char)pgm_read_byte(&s[i]) : s[i];
+#else
+  char c = s[i];
+
+  (void)progmem;
+#endif
+
+  return c;
+}
+#endif
+
 #if CLI_ENABLE_AUTH
 /**
  * @brief Compare two secrets in time independent of where they differ.
@@ -2502,9 +2605,10 @@ static bool cli_case_equal(const char *a, const char *b) {
 /**
  * @brief Test whether @p s can be used as a command keyword.
  *
- * A keyword must be non-empty and must not contain characters that the line
- * editor or tokenizer treats specially (whitespace, control characters, @c ?,
- * @c | and @c "), otherwise it could never be typed as a single word.
+ * A keyword must be non-empty and consist of printable ASCII characters that the
+ * line editor and tokenizer do not treat specially (not @c ?, @c | or @c "),
+ * otherwise it could never be typed as a single word. The line editor accepts
+ * printable ASCII only, so bytes above 0x7E (UTF-8 included) are rejected too.
  *
  * @param[in] s  NUL-terminated candidate keyword (RAM).
  *
@@ -2515,7 +2619,7 @@ static bool cli_keyword_valid(const char *s) {
 
   for (const char *p = s; *p != '\0' && valid; p++) {
     unsigned char c = (unsigned char)*p;
-    valid = (c > 0x20U && c != (unsigned char)ASCII_DEL && c != (unsigned char)'?' &&
+    valid = (c > 0x20U && c < (unsigned char)ASCII_DEL && c != (unsigned char)'?' &&
              c != (unsigned char)ASCII_PIPE && c != (unsigned char)'"');
   }
 
@@ -2786,7 +2890,8 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli) {
       cli_restart_session(cli);
       CLI_WSTR(cli, "% Idle timeout. Session restarted.\r\n");
     } else if (cli->idle_timeout_policy == CLI_IDLE_TIMEOUT_POLICY_CLOSE) {
-      CLI_WSTR(cli, "\r\n% Idle timeout.\r\n");
+      cli_input_newline(cli);
+      CLI_WSTR(cli, "% Idle timeout.\r\n");
       cli->session_state = CLI_SESSION_STOP;
       rc = CLI_ERR_QUIT;
     } else {
@@ -2801,18 +2906,20 @@ static int8_t cli_handle_idle_timeout(cli_struct_t *cli) {
 /* Output Line Processing ---------------------------------------------------------------*/
 
 /**
- * @brief Emit one complete output line through the active print path.
+ * @brief Emit one output line, or one piece of a longer line, through the active print path.
  *
- * The line is first checked against the active pipe filter when filtering is
- * enabled.  If the line passes, it is delivered either to @c print_transport_cb as a
+ * The text is first checked against the active pipe filter when filtering is
+ * enabled.  If it passes, it is delivered either to @c print_transport_cb as a
  * NUL-terminated string without a trailing newline, or to the default
- * transport followed by @c \r\n.
+ * transport. There the line ends with @c \r\n after its last piece: the pieces of a
+ * long line stay one line on the terminal, also when the filter hides its last piece.
  *
- * @param[in] cli   Active CLI session.
- * @param[in] line  NUL-terminated logical output line.
+ * @param[in] cli             Active CLI session.
+ * @param[in] line            NUL-terminated output line or piece.
+ * @param[in] line_continues  @c true when more pieces of this line follow.
  */
 #if CLI_HAS_LINE_BUFFER
-static void cli_print_emit(cli_struct_t *cli, const char *line) {
+static void cli_print_emit(cli_struct_t *cli, const char *line, bool line_continues) {
   bool emit = True;
 
 #if CLI_ENABLE_PIPE_FILTER
@@ -2821,33 +2928,87 @@ static void cli_print_emit(cli_struct_t *cli, const char *line) {
   }
 #endif
 
-  if (emit) {
 #if CLI_ENABLE_PRINT_TRANSPORT_CB
-    if (cli->print_transport_cb != NULL) {
+  if (cli->print_transport_cb != NULL) {
+    if (emit) {
       cli->print_transport_cb(cli, line);
-    } else
+    }
+  } else
 #endif
-    {
+  {
+    if (emit) {
       cli_write_str(cli, line);
+      cli->out_open = True;
+    }
+    if (!line_continues && cli->out_open) {
       cli_write_str(cli, CLI_CRLF);
+      cli->out_open = False;
     }
   }
 }
 
+#if CLI_ENABLE_PIPE_FILTER
 /**
- * @brief Emit the buffered output text as one line and empty the buffer.
+ * @brief Number of characters at the end of a full line buffer that stay for the next
+ *        piece of the same line.
+ *
+ * A pattern split by a piece boundary would be found in neither piece: the last
+ * <tt>strlen(pattern) - 1</tt> characters go out with the next piece instead, so the
+ * pattern is always seen whole. At least one character goes out with each piece.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return Characters to keep.
+ */
+static cli_len_t cli_filter_overlap(const cli_struct_t *cli) {
+  cli_len_t keep = 0;
+
+  if (cli->filter_type == CLI_FILTER_GREP || cli->filter_type == CLI_FILTER_EXCLUDE ||
+      cli->filter_type == CLI_FILTER_BEGIN) {
+    size_t pattern_len = strlen(cli->filter_pattern);
+
+    if (pattern_len > (size_t)CLI_MAX_OUTPUT_BUF - 2U) {
+      keep = (cli_len_t)(CLI_MAX_OUTPUT_BUF - 2); /* longer than a piece: never whole */
+    } else if (pattern_len > 1U) {
+      keep = (cli_len_t)(pattern_len - 1U);
+    } else {
+      /* To silence MISRA */
+    }
+  }
+
+  return keep;
+}
+#endif
+
+/**
+ * @brief Emit the buffered output text as one line (or one piece of a longer line) and
+ *        empty the buffer.
  * @param[in] cli             Active CLI session.
  * @param[in] line_continues  @c true when the buffer is full and the line goes on: the
  *                            text that follows is the rest of this line for the filter.
  */
 static void cli_line_buffer_emit(cli_struct_t *cli, bool line_continues) {
-  cli->filter_line_buf[cli->filter_line_buf_len] = '\0';
+  cli_len_t keep = 0;
+  cli_len_t piece_len;
+  char kept_first;
+
+#if CLI_ENABLE_PIPE_FILTER
+  if (line_continues) {
+    keep = cli_filter_overlap(cli);
+  }
+#endif
+  piece_len = (cli_len_t)(cli->filter_line_buf_len - keep);
+  kept_first = cli->filter_line_buf[piece_len];
+  cli->filter_line_buf[piece_len] = '\0';
   cli->filter_line_buf_len = 0;
-  cli_print_emit(cli, cli->filter_line_buf);
+  cli_print_emit(cli, cli->filter_line_buf, line_continues);
+  if (keep > 0) {
+    cli->filter_line_buf[piece_len] = kept_first;
+    memmove(cli->filter_line_buf, &cli->filter_line_buf[piece_len], (size_t)keep);
+    cli->filter_line_buf_len = keep;
+  }
 #if CLI_ENABLE_PIPE_FILTER
   cli->filter_line_cont = line_continues;
-#else
-  (void)line_continues;
 #endif
 }
 #endif
@@ -2921,6 +3082,62 @@ static void cli_output_end_line(cli_struct_t *cli) {
   }
 }
 
+/**
+ * @brief Print an engine error line for the command line being run (unknown command,
+ *        too many arguments, ...).
+ *
+ * Delivered like a @c cli_error() line: after any output already produced (an open line
+ * is ended first, so a nested @c cli_exec() does not break into it), past the pipe filter,
+ * and to @c print_transport_cb when one is set (in pieces of at most
+ * @c CLI_MAX_OUTPUT_BUF - 1 characters, as every line it receives).
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] msg   Message with its "% " prefix (in flash on AVR: @c CMD_STR()).
+ * @param[in] arg   Text placed after @p msg (in RAM), or @c NULL.
+ * @param[in] tail  Text placed after @p arg (in flash on AVR), or @c NULL.
+ */
+static void cli_diag(cli_struct_t *cli, const char *msg, const char *arg, const char *tail) {
+  cli_output_end_line(cli);
+#if CLI_ENABLE_PRINT_TRANSPORT_CB
+  if (cli->print_transport_cb != NULL) {
+    const char *parts[3] = {msg, arg, tail};
+    const bool in_flash[3] = {CLI_TEXT_PROGMEM, False, CLI_TEXT_PROGMEM};
+    char line[CLI_MAX_OUTPUT_BUF];
+    size_t len = 0U;
+
+    for (size_t p = 0U; p < 3U; p++) {
+      for (size_t i = 0U; parts[p] != NULL && cli_text_at(parts[p], i, in_flash[p]) != '\0'; i++) {
+        if (len == sizeof(line) - 1U) {
+          line[len] = '\0';
+          cli->print_transport_cb(cli, line);
+          len = 0U;
+        }
+        line[len] = cli_text_at(parts[p], i, in_flash[p]);
+        len++;
+      }
+    }
+    line[len] = '\0';
+    cli->print_transport_cb(cli, line);
+  } else
+#endif
+  {
+#if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
+    cli_write_str_P(cli, msg);
+#else
+    cli_write_str(cli, msg);
+#endif
+    cli_write_str(cli, arg); /* nothing for NULL */
+    if (tail != NULL) {
+#if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
+      cli_write_str_P(cli, tail);
+#else
+      cli_write_str(cli, tail);
+#endif
+    }
+    CLI_WSTR(cli, CLI_CRLF);
+  }
+}
+
 #if !defined(__AVR__) && !defined(ARDUINO_ARCH_AVR)
 /**
  * @brief Send a NUL-terminated RAM string through the command output path.
@@ -2951,31 +3168,195 @@ static void cli_history_capture_edited_preview(cli_struct_t *cli) {
 
 /* Line Editing -------------------------------------------------------------------------*/
 
+#if CLI_ENABLE_LINE_WRAP
+/**
+ * @brief Test whether cursor motion follows the terminal's line wrapping: an ANSI
+ *        terminal of known width (@c cli_set_terminal_width()).
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return @c true when a line longer than one row is edited across its rows.
+ */
+static bool cli_wrap_aware(const cli_struct_t *cli) {
+  return cli->ansi_supported && cli->term_width > 0U;
+}
+
+/**
+ * @brief Move the terminal cursor along one axis with a CSI sequence.
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] from  Row or column the cursor is at.
+ * @param[in] to    Row or column to move to.
+ * @param[in] back  CSI final byte that moves towards smaller values (@c A up, @c D left).
+ * @param[in] fwd   CSI final byte that moves towards larger values (@c B down, @c C right).
+ */
+static void cli_cursor_step(cli_struct_t *cli, uint32_t from, uint32_t to, char back, char fwd) {
+  if (from != to) {
+    char seq[16]; /* ESC [ <up to 10 digits> <final> NUL */
+    size_t pos = sizeof(seq) - 1U;
+    uint32_t n = (to > from) ? (to - from) : (from - to);
+
+    seq[pos] = '\0';
+    pos--;
+    seq[pos] = (to > from) ? fwd : back;
+    do {
+      pos--;
+      seq[pos] = (char)('0' + (char)(n % 10U));
+      n /= 10U;
+    } while (n > 0U);
+    pos--;
+    seq[pos] = (char)ASCII_LSBRACKET;
+    pos--;
+    seq[pos] = (char)ASCII_ESC;
+    cli_write_str(cli, &seq[pos]);
+  }
+}
+
+/**
+ * @brief Finish text just written up to input position @p pos (at least one character
+ *        must have been written).
+ *
+ * Text that exactly fills a terminal row leaves the cursor waiting at the row's last
+ * column for the next character (deferred wrap), where no position can be addressed: the
+ * cursor is moved to the start of the next row, where position @p pos is.
+ *
+ * @param[in] cli  Active CLI session.
+ * @param[in] pos  Input position the text ends at.
+ */
+static void cli_cursor_settle(cli_struct_t *cli, cli_len_t pos) {
+  if (cli_wrap_aware(cli)) {
+    uint32_t offset = (uint32_t)cli->prompt_len + (uint32_t)pos;
+
+    if (offset > 0U && (offset % cli->term_width) == 0U) {
+      CLI_WSTR(cli, CLI_CRLF);
+    }
+  }
+}
+
+/**
+ * @brief Ask an ANSI terminal for its width.
+ *
+ * The cursor moves as far right as it goes, the terminal is asked for its position and
+ * the cursor returns to the start of the row. The reply arrives as input
+ * (<tt>ESC [ row ; column R</tt>) and sets the width (@c cli_process_escape()). A terminal
+ * that does not answer leaves the width as it was.
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_term_width_query(cli_struct_t *cli) {
+  if (cli->ansi_supported) {
+    CLI_WSTR(cli, "\x1b"
+                  "[999C\x1b"
+                  "[6n\r");
+    cli->term_width_query = True;
+  }
+}
+#endif
+
+/**
+ * @brief Move the terminal cursor from input position @p from (where it is) to @p to.
+ *
+ * When the terminal's width is known (@c CLI_ENABLE_LINE_WRAP), the rows and columns of
+ * both positions follow from the prompt length and the cursor moves by rows and columns,
+ * so a line longer than one row is edited across its rows. Otherwise it moves back with
+ * backspaces and forward by writing the characters again, on one row.
+ *
+ * @param[in] cli   Active CLI session.
+ * @param[in] from  Input position the cursor is at.
+ * @param[in] to    Input position to move to.
+ */
+static void cli_cursor_goto(cli_struct_t *cli, cli_len_t from, cli_len_t to) {
+#if CLI_ENABLE_LINE_WRAP
+  if (cli_wrap_aware(cli)) {
+    uint32_t width = cli->term_width;
+    uint32_t a = (uint32_t)cli->prompt_len + (uint32_t)from;
+    uint32_t b = (uint32_t)cli->prompt_len + (uint32_t)to;
+
+    cli_cursor_step(cli, a / width, b / width, 'A', 'B');
+    cli_cursor_step(cli, a % width, b % width, 'D', 'C');
+  } else
+#endif
+      if (to < from) {
+    for (cli_len_t i = to; i < from; i++) {
+      cli_write_char(cli, ASCII_BS);
+    }
+  } else {
+    cli_raw_write(cli, (const uint8_t *)&cli->input[from], (cli_transport_buflen_t)(to - from));
+  }
+}
+
+/**
+ * @brief End the line on screen (prompt and what was typed) before something is printed
+ *        below it: a command's output, help, a message, the next prompt.
+ *
+ * On a terminal of known width (@c CLI_ENABLE_LINE_WRAP) the cursor first moves past the
+ * end of the input, which may span several rows below it; a password typed so far is not
+ * on screen.
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_input_newline(cli_struct_t *cli) {
+  bool new_row = True;
+
+#if CLI_ENABLE_LINE_WRAP
+  if (cli_wrap_aware(cli)) {
+    cli_len_t shown = cli->input_len;
+    cli_len_t cursor = cli->cursor;
+    uint32_t end;
+
+#if CLI_ENABLE_AUTH
+    if (cli_auth_secret_input(cli)) {
+      shown = 0;
+      cursor = 0;
+    }
+#endif
+    cli_cursor_goto(cli, cursor, shown);
+    /* Text that filled its last row already left the cursor at the start of a new one. */
+    end = (uint32_t)cli->prompt_len + (uint32_t)shown;
+    new_row = (end == 0U || (end % cli->term_width) != 0U);
+  }
+#endif
+  if (new_row) {
+    CLI_WSTR(cli, CLI_CRLF);
+  }
+}
+
 /**
  * @brief Redraw the entire input line from column 0.
  *
  * Moves to the beginning of the line, reprints the prompt and input buffer,
- * then repositions the cursor at @c cli->cursor.
+ * then repositions the cursor at @c cli->cursor. The cursor is on a row of its own
+ * (callers print what comes before on the rows above).
  *
  * @param[in] cli  Active CLI session.
  */
 static void cli_redraw_line(cli_struct_t *cli) {
-  /* Move to start of line, clear to EOL, reprint input */
   CLI_WSTR(cli, "\r");
   cli_show_prompt(cli);
 
-  cli_raw_write(cli, (const uint8_t *)cli->input, cli->input_len);
+  if (cli->input_len > 0) {
+    cli_raw_write(cli, (const uint8_t *)cli->input, (cli_transport_buflen_t)cli->input_len);
+#if CLI_ENABLE_LINE_WRAP
+    cli_cursor_settle(cli, cli->input_len);
+#endif
+  }
 
-  if (cli->ansi_supported) {
+  /* Clear what an earlier, longer line left behind: on the rows below too when the line
+   * may span several. */
+#if CLI_ENABLE_LINE_WRAP
+  if (cli_wrap_aware(cli)) {
+    CLI_WSTR(cli, "\x1b"
+                  "[J");
+  } else
+#endif
+      if (cli->ansi_supported) {
     CLI_WSTR(cli, "\x1b"
                   "[K");
+  } else {
+    /* A dumb terminal cannot clear. */
   }
 
-  /* If cursor is not at end, move it back (plain BS, like all other cursor motion) */
-  cli_len_t trail = cli->input_len - cli->cursor;
-  for (cli_len_t i = 0; i < trail; i++) {
-    cli_write_char(cli, ASCII_BS);
-  }
+  cli_cursor_goto(cli, cli->input_len, cli->cursor);
 }
 
 /**
@@ -3018,14 +3399,8 @@ static void cli_move_cursor(cli_struct_t *cli, cli_len_t pos) {
     pos = cli->input_len;
   }
 
-  while (cli->cursor < pos) {
-    cli_write_char(cli, cli->input[cli->cursor]);
-    cli->cursor++;
-  }
-  while (cli->cursor > pos) {
-    cli_write_char(cli, ASCII_BS);
-    cli->cursor--;
-  }
+  cli_cursor_goto(cli, cli->cursor, pos);
+  cli->cursor = pos;
 }
 
 /**
@@ -3046,10 +3421,10 @@ static void cli_insert_char(cli_struct_t *cli, char c) {
 
     /* Rewrite from cursor to end, then reposition */
     cli_raw_write(cli, (const uint8_t *)&cli->input[cli->cursor], cli->input_len - cli->cursor);
-    cli_len_t trail = cli->input_len - cli->cursor - 1;
-    for (cli_len_t i = 0; i < trail; i++) {
-      cli_write_char(cli, ASCII_BS);
-    }
+#if CLI_ENABLE_LINE_WRAP
+    cli_cursor_settle(cli, cli->input_len);
+#endif
+    cli_cursor_goto(cli, cli->input_len, cli->cursor + 1);
     cli->cursor++;
     cli_history_capture_edited_preview(cli);
   }
@@ -3066,12 +3441,21 @@ static void cli_delete_char(cli_struct_t *cli) {
     cli->input_len--;
     cli->input[cli->input_len] = '\0';
 
-    /* Rewrite tail, append space to erase last char, reposition */
+    /* Rewrite the tail, erase the last character it leaves behind, reposition */
     cli_raw_write(cli, (const uint8_t *)&cli->input[cli->cursor], cli->input_len - cli->cursor);
-    cli_write_char(cli, ' ');
-    cli_len_t trail = cli->input_len - cli->cursor + 1;
-    for (cli_len_t i = 0; i < trail; i++) {
-      cli_write_char(cli, ASCII_BS);
+#if CLI_ENABLE_LINE_WRAP
+    if (cli_wrap_aware(cli)) {
+      if (cli->cursor < cli->input_len) {
+        cli_cursor_settle(cli, cli->input_len); /* only after text that was written */
+      }
+      CLI_WSTR(cli, "\x1b"
+                    "[K");
+      cli_cursor_goto(cli, cli->input_len, cli->cursor);
+    } else
+#endif
+    {
+      cli_write_char(cli, ' ');
+      cli_cursor_goto(cli, cli->input_len + 1, cli->cursor);
     }
     cli_history_capture_edited_preview(cli);
   }
@@ -3084,7 +3468,7 @@ static void cli_delete_char(cli_struct_t *cli) {
 static void cli_backspace(cli_struct_t *cli) {
   if (cli->cursor > 0) {
     /* Keep terminal cursor in sync with logical cursor before delete. */
-    cli_write_char(cli, ASCII_BS);
+    cli_cursor_goto(cli, cli->cursor, cli->cursor - 1);
     cli->cursor--;
     cli_delete_char(cli);
   }
@@ -3095,14 +3479,22 @@ static void cli_backspace(cli_struct_t *cli) {
  * @param[in] cli  Active CLI session.
  */
 static void cli_kill_line(cli_struct_t *cli) {
-  /* Erase from cursor to end */
-  cli_len_t erase = cli->input_len - cli->cursor;
-  for (cli_len_t i = 0; i < erase; i++) {
-    cli_write_char(cli, ' ');
-  }
+  /* Erase from cursor to end (on the rows below too when the line spans several) */
+#if CLI_ENABLE_LINE_WRAP
+  if (cli_wrap_aware(cli)) {
+    CLI_WSTR(cli, "\x1b"
+                  "[J");
+  } else
+#endif
+  {
+    cli_len_t erase = cli->input_len - cli->cursor;
+    for (cli_len_t i = 0; i < erase; i++) {
+      cli_write_char(cli, ' ');
+    }
 
-  for (cli_len_t i = 0; i < erase; i++) {
-    cli_write_char(cli, ASCII_BS);
+    for (cli_len_t i = 0; i < erase; i++) {
+      cli_write_char(cli, ASCII_BS);
+    }
   }
 
   cli->input_len = cli->cursor;
@@ -3151,10 +3543,18 @@ static void cli_redisplay_input(cli_struct_t *cli) {
 #if CLI_ENABLE_AUTH
   editor = !cli_state_is_auth_input(cli);
   if (cli->auth_state == CLI_AUTH_USERNAME) {
-    CLI_WSTR(cli, "Username: ");
-    cli_raw_write(cli, (const uint8_t *)cli->input, cli->input_len);
+    cli_show_username_prompt(cli);
+    cli_raw_write(cli, (const uint8_t *)cli->input, (cli_transport_buflen_t)cli->input_len);
+#if CLI_ENABLE_LINE_WRAP
+    if (cli->input_len > 0) {
+      cli_cursor_settle(cli, cli->input_len); /* only after text that was written */
+    }
+#endif
   } else if (cli_auth_secret_input(cli)) {
-    CLI_WSTR(cli, "Password: ");
+    CLI_WSTR(cli, CLI_PASSWORD_PROMPT); /* nothing typed is shown after it */
+#if CLI_ENABLE_LINE_WRAP
+    cli->prompt_len = (cli_len_t)(sizeof(CLI_PASSWORD_PROMPT) - 1U);
+#endif
   } else {
     /* The command line, or a lockout (no prompt). */
   }
@@ -3171,21 +3571,36 @@ static void cli_redisplay_input(cli_struct_t *cli) {
 
 #if CLI_ENABLE_AUTH
 /**
- * @brief Show the prompt after what is asked for changed (a login or password prompt
- *        requested by a command or a callback).
+ * @brief Test whether the prompt for what is asked for, when that changes (a login or
+ *        password prompt requested by a command or a callback), is shown at once.
  *
  * Inside a command it is shown once the command has finished, after its output
- * (@c cli_after_command(), @c cli_exec()); outside any command it is shown now, on a
- * fresh line. Before the session runs, the session start shows it.
+ * (@c cli_after_command(), @c cli_exec()); while a login line is handled, once the line is
+ * done (@c cli_auth_handle()); before the session runs, the session start shows it.
+ * Outside any command it is shown at once: the caller ends the line on screen
+ * (@c cli_input_newline()) before it resets the input, and shows the new prompt
+ * (@c cli_redisplay_input()) afterwards.
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return @c true when the caller shows the change now.
+ */
+static bool cli_prompt_change_now(const cli_struct_t *cli) {
+  return (cli->exec_depth == 0U && cli->session_state == CLI_SESSION_RUN &&
+          !cli->auth_line_pending);
+}
+
+/**
+ * @brief Show the login prompt; the name typed follows it on screen.
  *
  * @param[in] cli  Active CLI session.
  */
-static void cli_input_prompt_changed(cli_struct_t *cli) {
-  /* While a login line is handled, cli_auth_handle() shows the prompt once it is done. */
-  if (cli->exec_depth == 0U && cli->session_state == CLI_SESSION_RUN && !cli->auth_line_pending) {
-    CLI_WSTR(cli, CLI_CRLF);
-    cli_redisplay_input(cli);
-  }
+static void cli_show_username_prompt(cli_struct_t *cli) {
+  CLI_WSTR(cli, CLI_USERNAME_PROMPT);
+#if CLI_ENABLE_LINE_WRAP
+  cli->prompt_len = (cli_len_t)(sizeof(CLI_USERNAME_PROMPT) - 1U);
+  cli_cursor_settle(cli, 0);
+#endif
 }
 #endif
 
@@ -3287,6 +3702,10 @@ static void cli_show_prompt(cli_struct_t *cli) {
         prompt[pos++] = ' ';
         prompt[pos] = '\0';
         cli_write_str(cli, prompt);
+#if CLI_ENABLE_LINE_WRAP
+        cli->prompt_len = (cli_len_t)pos;
+        cli_cursor_settle(cli, 0);
+#endif
         cli_flush(cli);
         emitted = True;
       }
@@ -3314,6 +3733,10 @@ static void cli_show_prompt(cli_struct_t *cli) {
       prompt[pos] = '\0';
 
       cli_write_str(cli, prompt);
+#if CLI_ENABLE_LINE_WRAP
+      cli->prompt_len = (cli_len_t)pos;
+      cli_cursor_settle(cli, 0);
+#endif
       cli_flush(cli);
     }
   }
@@ -3424,18 +3847,22 @@ static cli_history_idx_t cli_history_index(const cli_struct_t *cli, cli_history_
  */
 static void cli_history_clear_displayed_input(cli_struct_t *cli) {
   cli_len_t len = cli->input_len;
-  cli_len_t cursor = cli->cursor;
 
-  for (cli_len_t i = 0; i < cursor; i++) {
-    cli_write_char(cli, ASCII_BS);
-  }
+  cli_cursor_goto(cli, cli->cursor, 0);
+#if CLI_ENABLE_LINE_WRAP
+  if (cli_wrap_aware(cli)) {
+    CLI_WSTR(cli, "\x1b"
+                  "[J"); /* the rows below too */
+  } else
+#endif
+  {
+    for (cli_len_t i = 0; i < len; i++) {
+      cli_write_char(cli, ' ');
+    }
 
-  for (cli_len_t i = 0; i < len; i++) {
-    cli_write_char(cli, ' ');
-  }
-
-  for (cli_len_t i = 0; i < len; i++) {
-    cli_write_char(cli, ASCII_BS);
+    for (cli_len_t i = 0; i < len; i++) {
+      cli_write_char(cli, ASCII_BS);
+    }
   }
 
   cli->input[0] = '\0';
@@ -3497,6 +3924,11 @@ static void cli_history_navigate(cli_struct_t *cli, cli_history_nav_dir_enum_t d
     cli->input_len = (int)strlen(cli->input);
     cli->cursor = cli->input_len;
     cli_write_str(cli, cli->input);
+#if CLI_ENABLE_LINE_WRAP
+    if (cli->input_len > 0) {
+      cli_cursor_settle(cli, cli->input_len); /* only after text that was written */
+    }
+#endif
   }
 }
 
@@ -3672,9 +4104,9 @@ static void cli_foreach_match(cli_struct_t *cli, const char *word, cli_cmd_handl
  */
 static bool cli_cmd_selectable(const cli_struct_t *cli, const cli_cmd_struct_t *cmd,
                                cli_cmd_handle_t parent) {
-  bool allowed = (CLI_CMD_IS_IN_USE(cmd) && cmd->parent == parent &&
-                  cmd->privilege <= cli->privilege &&
-                  (cmd->mode == CLI_MODE_ANY || cmd->mode == cli->mode));
+  bool allowed =
+      (CLI_CMD_IS_IN_USE(cmd) && cmd->parent == parent && cmd->privilege <= cli->privilege &&
+       (cmd->mode == CLI_MODE_ANY || cmd->mode == cli->mode));
 
   /* Recursion follows the parent links downwards, so it ends at the tree's leaves. */
   return allowed && (cmd->callback != NULL ||
@@ -3788,8 +4220,7 @@ static bool cli_name_taken(const cli_struct_t *cli, cli_cmd_handle_t parent, cli
 static cli_cmd_handle_t cli_add_command_impl(cli_struct_t *cli, cli_cmd_handle_t parent,
                                              const char *name, bool name_progmem,
                                              cli_cmd_handler_fn callback, cli_priv_t privilege,
-                                             cli_mode_t mode, const char *help,
-                                             bool help_progmem) {
+                                             cli_mode_t mode, const char *help, bool help_progmem) {
   cli_cmd_handle_t handle = CLI_CMD_INVALID;
 
   if (cli == NULL || cli->cmd_pool == NULL || name == NULL) {
@@ -4190,8 +4621,8 @@ static void cli_tab_complete_words(cli_struct_t *cli, char *scratch) {
   }
 
   /* A separator right before the cursor means a new word is being started. */
-  bool trailing_space =
-      (cli->cursor > 0 && (cli->input[cli->cursor - 1] == ' ' || cli->input[cli->cursor - 1] == '\t'));
+  bool trailing_space = (cli->cursor > 0 && (cli->input[cli->cursor - 1] == ' ' ||
+                                             cli->input[cli->cursor - 1] == '\t'));
 
   const char *partial = (argc > 0 && !trailing_space) ? argv[argc - 1] : "";
   int depth = (trailing_space) ? argc : ((argc > 0) ? argc - 1 : 0);
@@ -4257,7 +4688,7 @@ static void cli_tab_complete_words(cli_struct_t *cli, char *scratch) {
     } else {
       /* Pass 2: list all candidates */
       cli_help_ctx_struct_t ctx = {False, False};
-      CLI_WSTR(cli, CLI_CRLF);
+      cli_input_newline(cli);
       cli_foreach_match(cli, partial, parent, with_root, cli_print_help_cb, &ctx);
       cli_redraw_line(cli);
     }
@@ -4323,7 +4754,7 @@ static void cli_show_help(cli_struct_t *cli) {
   char *pipe = cli_find_pipe(scratch);
   if (pipe != NULL) {
     /* After '|': the filter keywords, or what the chosen filter takes. */
-    CLI_WSTR(cli, CLI_CRLF);
+    cli_input_newline(cli);
     cli_filter_show_help(cli, pipe + 1);
     cli_redraw_line(cli);
   } else
@@ -4374,14 +4805,15 @@ static void cli_show_help_words(cli_struct_t *cli, char *scratch) {
   cli_argc_t argc = 0;
   cli_tokenize_status_enum_t tok = cli_tokenize(scratch, argv, CLI_MAX_ARGS, &argc);
 
-  bool trailing_space =
-      (cli->cursor > 0 && (cli->input[cli->cursor - 1] == ' ' || cli->input[cli->cursor - 1] == '\t'));
+  bool trailing_space = (cli->cursor > 0 && (cli->input[cli->cursor - 1] == ' ' ||
+                                             cli->input[cli->cursor - 1] == '\t'));
   const char *partial = (argc > 0 && !trailing_space) ? argv[argc - 1] : "";
   int depth = (trailing_space) ? argc : ((argc > 0) ? argc - 1 : 0);
   bool show = True;
 
   if (tok == CLI_TOKENIZE_TOO_MANY) {
-    CLI_WSTR(cli, "\r\n% Too many arguments.\r\n");
+    cli_input_newline(cli);
+    CLI_WSTR(cli, "% Too many arguments.\r\n");
     cli_redraw_line(cli);
     show = False;
   }
@@ -4391,10 +4823,11 @@ static void cli_show_help_words(cli_struct_t *cli, char *scratch) {
   if (show) {
     int8_t r = cli_walk_words(cli, argv, depth, &parent, &args);
     if (r != CLI_OK) {
+      cli_input_newline(cli);
       if (r == CLI_ERR) {
-        CLI_WSTR(cli, "\r\n% Unknown command.\r\n");
+        CLI_WSTR(cli, "% Unknown command.\r\n");
       } else {
-        CLI_WSTR(cli, "\r\n% Ambiguous command.\r\n");
+        CLI_WSTR(cli, "% Ambiguous command.\r\n");
       }
       cli_redraw_line(cli);
       show = False;
@@ -4406,7 +4839,7 @@ static void cli_show_help_words(cli_struct_t *cli, char *scratch) {
      * space) lists what may follow "word" — the partial is "" in that case. Words after a
      * command without subcommands are its arguments: only <cr> can be listed. */
     cli_help_ctx_struct_t ctx = {False, False};
-    CLI_WSTR(cli, CLI_CRLF);
+    cli_input_newline(cli);
     if (!args) {
       cli_foreach_match(cli, partial, parent, depth == 0, cli_print_help_cb, &ctx);
     }
@@ -4569,8 +5002,8 @@ static const struct {
   const char *keyword;
   cli_filter_enum_t type;
 } s_filter_keywords[] = {
-    {"grep", CLI_FILTER_GREP},     {"include", CLI_FILTER_GREP}, {"exclude", CLI_FILTER_EXCLUDE},
-    {"begin", CLI_FILTER_BEGIN},   {"count", CLI_FILTER_COUNT},
+    {"grep", CLI_FILTER_GREP},   {"include", CLI_FILTER_GREP}, {"exclude", CLI_FILTER_EXCLUDE},
+    {"begin", CLI_FILTER_BEGIN}, {"count", CLI_FILTER_COUNT},
 };
 
 /** @brief Number of entries in @c s_filter_keywords. */
@@ -4769,7 +5202,7 @@ static void cli_filter_tab_complete(cli_struct_t *cli, char *tail) {
         cli_insert_char(cli, ' ');
       }
     } else {
-      CLI_WSTR(cli, CLI_CRLF);
+      cli_input_newline(cli);
       for (size_t i = 0; i < CLI_FILTER_KEYWORD_COUNT; i++) {
         if (cli_case_prefix_match(s_filter_keywords[i].keyword, kw)) {
           cli_filter_help_line(cli, s_filter_keywords[i].keyword, s_filter_keywords[i].type);
@@ -4817,24 +5250,23 @@ static int8_t cli_parse_filter(cli_struct_t *cli, char *line) {
     cli_len_t plen = (cli_len_t)strlen(pattern); /* no trailing blanks: the line is trimmed */
 
     if (type == CLI_FILTER_NONE || ambiguous) {
-      CLI_WSTR(cli, "% Invalid filter: ");
-      cli_write_str(cli, (kw[0] != '\0') ? kw : "(missing)");
-      CLI_WSTR(cli, " (use grep, include, exclude, begin or count)\r\n");
+      cli_diag(cli, CMD_STR("% Invalid filter: "), (kw[0] != '\0') ? kw : "(missing)",
+               CMD_STR(" (use grep, include, exclude, begin or count)"));
       rc = CLI_ERR;
     } else if (type == CLI_FILTER_COUNT) {
       if (plen > 0) {
-        CLI_WSTR(cli, "% The count filter takes no pattern.\r\n");
+        CLI_DIAG(cli, "% The count filter takes no pattern.");
         rc = CLI_ERR;
       }
     } else if (plen == 0) {
-      CLI_WSTR(cli, "% Missing filter pattern.\r\n");
+      CLI_DIAG(cli, "% Missing filter pattern.");
       rc = CLI_ERR;
     } else if (pattern[0] == '"') {
       const char *argv[2];
       cli_argc_t argc = 0;
       if (cli_tokenize(pattern, argv, 2, &argc) != CLI_TOKENIZE_OK || argc != 1 ||
           argv[0][0] == '\0') {
-        CLI_WSTR(cli, "% Invalid filter pattern.\r\n");
+        CLI_DIAG(cli, "% Invalid filter pattern.");
         rc = CLI_ERR;
       }
       /* On success the tokenizer unquoted the pattern in place, starting at pattern[0]. */
@@ -4890,11 +5322,11 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
         case ASCII_CR:
           /* fallthrough */
         case ASCII_LF:
-          CLI_WSTR(cli, CLI_CRLF);
+          cli_input_newline(cli);
           cli_after_command(cli, cli_submit_line(cli), &rc);
           break;
 
-        /* Tab — completion */
+          /* Tab — completion */
 #if CLI_ENABLE_TAB_COMPLETION
         case ASCII_TAB:
           cli_tab_complete(cli);
@@ -4946,19 +5378,23 @@ static int8_t cli_feed(cli_struct_t *cli, int byte) {
         case 0x04:
           if (cli->input_len == 0) {
             /* EOF on empty line behaves exactly like the 'quit' command (hook + policy). */
-            CLI_WSTR(cli, CLI_CRLF);
+            cli_input_newline(cli);
             cli_after_command(cli, cli_quit_key(cli), &rc);
           } else {
             cli_delete_char(cli);
           }
           break;
 
-        /* Ctrl+L — clear screen and redraw (a dumb terminal just gets a fresh line) */
+        /* Ctrl+L — clear screen and redraw (a dumb terminal just gets a fresh line). The
+         * terminal may have been resized: its width is asked for again. */
         case 0x0C:
           if (cli->ansi_supported) {
             CLI_WSTR(cli, "\x1b"
                           "[2J\x1b"
                           "[H");
+#if CLI_ENABLE_LINE_WRAP
+            cli_term_width_query(cli);
+#endif
           } else {
             CLI_WSTR(cli, CLI_CRLF);
           }
@@ -5072,14 +5508,10 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
                             : cli_resolve_one(cli, argv[depth], parent, CLI_CMD_INVALID, &h);
 
     if (r == CLI_ERR) {
-      CLI_WSTR(cli, "% Unknown command: ");
-      cli_write_str(cli, argv[depth]);
-      CLI_WSTR(cli, CLI_CRLF);
+      cli_diag(cli, CMD_STR("% Unknown command: "), argv[depth], NULL);
       done = True;
     } else if (r == CLI_ERR_AMBIG) {
-      CLI_WSTR(cli, "% Ambiguous command: ");
-      cli_write_str(cli, argv[depth]);
-      CLI_WSTR(cli, CLI_CRLF);
+      cli_diag(cli, CMD_STR("% Ambiguous command: "), argv[depth], NULL);
       rc = CLI_ERR_AMBIG;
       done = True;
     } else {
@@ -5098,25 +5530,31 @@ static int8_t cli_execute_command(cli_struct_t *cli, const char *argv[], cli_arg
           cli_session_mark_struct_t mark = cli_session_mark(cli);
           /* This command's entry: commands run from it (cli_exec()) use the ones above. */
           uint8_t slot = (uint8_t)(cli->exec_depth - 1U);
+          /* The callback may remove its own command, which clears the node it would name. */
+          char name[CLI_MAX_NAME_LEN];
 
-          /* Track the lowest level this command reaches (cli_context_enter()). */
+          (void)cli_strlcpy(name, cmd->name, sizeof(name));
+          /* Track the lowest level this command reaches (cli_context_enter()), and whether
+           * it is removed while it runs (cli_remove_command()). */
           cli->nav_floor[slot] = cli->nav_depth;
           cli->nav_floor_priv[slot] = cli->privilege;
-          rc = cmd->callback(cli, cmd->name, rem_argc, &argv[depth]);
+          cli->exec_cmd[slot] = h;
+          rc = cmd->callback(cli, name, rem_argc, &argv[depth]);
 
           /* A bare submenu command (no arguments) enters that submenu. Its subcommands are
            * looked up again now: the callback may have switched to the mode (or raised the
            * privilege) they need. The callback may have replaced the session or the login
-           * (a restart, cli_request_auth()), in which case navigation is left alone. */
+           * (a restart, cli_request_auth()), in which case navigation is left alone; or
+           * removed the command, whose slot may hold another command by now. */
           if (rc == CLI_OK && rem_argc == 1 && cli_session_kept(cli, &mark) &&
-              cli_handle_valid(cli, h) && cli_cmd_has_children(cli, h)) {
+              cli->exec_cmd[slot] == h && cli_cmd_has_children(cli, h)) {
             if (cli_context_enter(cli, h, slot) != CLI_OK) {
-              CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+              CLI_DIAG(cli, "% Navigation depth limit reached.");
               rc = CLI_ERR_NOMEM;
             }
           }
         } else {
-          CLI_WSTR(cli, "% Incomplete command.\r\n");
+          CLI_DIAG(cli, "% Incomplete command.");
         }
         done = True;
       }
@@ -5181,7 +5619,7 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
       rc = cli_parse_filter(cli, start);
     } else if (cli_find_pipe(start) != NULL) {
       /* Nested output already flows through the outer command's filter. */
-      CLI_WSTR(cli, "% Pipe filters cannot be used in a nested command.\r\n");
+      CLI_DIAG(cli, "% Pipe filters cannot be used in a nested command.");
       rc = CLI_ERR;
     } else {
       /* Nested command without a filter. */
@@ -5191,18 +5629,24 @@ static int8_t cli_execute(cli_struct_t *cli, char *line, bool interactive) {
     if (rc == CLI_OK) {
       cli_tokenize_status_enum_t tok = cli_tokenize(start, argv, CLI_MAX_ARGS, &argc);
       if (tok == CLI_TOKENIZE_TOO_MANY) {
-        CLI_WSTR(cli, "% Too many arguments.\r\n");
+        CLI_DIAG(cli, "% Too many arguments.");
         rc = CLI_ERR;
       } else if (tok == CLI_TOKENIZE_UNTERMINATED) {
-        CLI_WSTR(cli, "% Unterminated quoted string.\r\n");
+        CLI_DIAG(cli, "% Unterminated quoted string.");
         rc = CLI_ERR;
       } else {
         /* Tokens ready. */
       }
     }
 
-    if (rc == CLI_OK && argc > 0) {
+    if (rc != CLI_OK) {
+      /* Reported above. */
+    } else if (argc > 0) {
       rc = cli_execute_command(cli, argv, argc);
+    } else {
+      /* The line is not empty, so it was only a filter ('| include x'). */
+      CLI_DIAG(cli, "% Missing command before '|'.");
+      rc = CLI_ERR;
     }
 
 #if CLI_ENABLE_HISTORY
@@ -5302,7 +5746,7 @@ static void cli_auth_ask_username(cli_struct_t *cli) {
  */
 static void cli_auth_prompt_username(cli_struct_t *cli) {
   cli_auth_ask_username(cli);
-  CLI_WSTR(cli, "Username: ");
+  cli_show_username_prompt(cli);
   cli_flush(cli);
 }
 
@@ -5645,7 +6089,7 @@ static int8_t cli_auth_handle(cli_struct_t *cli, int byte) {
     case ASCII_LF: {
       int8_t exec_rc;
 
-      CLI_WSTR(cli, CLI_CRLF);
+      cli_input_newline(cli);
       /* Until the line is done no prompt is on screen: what callbacks print or run while
        * it is handled (cli_exec(), cli_request_auth()) shows none of its own. */
       cli->auth_line_pending = True;
@@ -5752,6 +6196,9 @@ static void cli_session_reset(cli_struct_t *cli) {
   cli_set_privilege(cli, CLI_PRIV_USER);
   cli->esc_state = ESC_STATE_NORMAL;
   cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+  cli->esc_param_last = 0;
+#endif
   cli_reset_input(cli);
 #if CLI_ENABLE_IDLE_TIMEOUT
   cli->idle_armed = False; /* nothing to reset until the user types */
@@ -5848,7 +6295,7 @@ static int8_t cli_enable_enter(cli_struct_t *cli) {
   int8_t rc = cli_set_mode(cli, CLI_MODE_ENABLE);
 
   if (rc != CLI_OK) {
-    CLI_WSTR(cli, "% Navigation depth limit reached.\r\n");
+    CLI_DIAG(cli, "% Navigation depth limit reached.");
   } else if (cli_session_kept(cli, &mark) && cli->privilege < CLI_PRIV_PRIVILEGED) {
     cli_set_privilege(cli, CLI_PRIV_PRIVILEGED); /* raised to it, never lowered */
   } else {
@@ -6030,8 +6477,7 @@ static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
       cli_cmd_handle_t above_context = last ? cli->context : cli->nav_stack[i + 1U].context;
       cli_priv_t above_privilege = last ? cli->privilege : cli->nav_stack[i + 1U].privilege;
 
-      if (f->mode != above_mode || f->context != above_context ||
-          f->privilege != above_privilege) {
+      if (f->mode != above_mode || f->context != above_context || f->privilege != above_privilege) {
         cli->nav_stack[kept] = *f;
         kept++;
       } else {
@@ -6163,7 +6609,17 @@ static void cli_auth_backspace(cli_struct_t *cli) {
     cli->input_len--;
     cli->input[cli->input_len] = '\0';
     cli->cursor = cli->input_len;
-    if (!cli_auth_secret_input(cli)) {
+    if (cli_auth_secret_input(cli)) {
+      /* Nothing typed is on screen. */
+    }
+#if CLI_ENABLE_LINE_WRAP
+    else if (cli_wrap_aware(cli)) {
+      cli_cursor_goto(cli, cli->input_len + 1, cli->input_len); /* also to the row above */
+      CLI_WSTR(cli, "\x1b"
+                    "[K");
+    }
+#endif
+    else {
       CLI_WSTR(cli, "\x08"
                     " \x08");
     }
@@ -6190,6 +6646,9 @@ static void cli_auth_insert_char(cli_struct_t *cli, char c) {
       cli->cursor = cli->input_len;
       if (!cli_auth_secret_input(cli)) {
         cli_write_char(cli, c);
+#if CLI_ENABLE_LINE_WRAP
+        cli_cursor_settle(cli, cli->input_len);
+#endif
       }
     } else {
       cli_write_char(cli, ASCII_BELL);
@@ -6205,9 +6664,12 @@ static void cli_auth_insert_char(cli_struct_t *cli, char c) {
  *
  * Recognises @c ESC [ (CSI) and @c ESC O (SS3) sequences following the
  * ECMA-48 byte classes: parameter bytes 0x30-0x3F, intermediate bytes
- * 0x20-0x2F, final byte 0x40-0x7E. Only the first numeric parameter is kept;
- * extra parameters such as the @c ;5 modifier of Ctrl+Arrow are consumed and
- * ignored. Sequences with private markers (@c < @c = @c > @c ?) or
+ * 0x20-0x2F, final byte 0x40-0x7E. The first and the last numeric parameter are
+ * kept; keys use the first, and extra parameters such as the @c ;5 modifier of
+ * Ctrl+Arrow are ignored. The last is the column of the terminal's reply to a width
+ * query (<tt>ESC [ row ; column R</tt>, @c cli_term_width_query()), which is taken
+ * while that reply is awaited, also during credential input. Sequences with private
+ * markers (@c < @c = @c > @c ?) or
  * intermediate bytes are consumed without action. An SS3 sequence may carry
  * modifier digits before its key code (@c ESC O 2 P); the Linux console's
  * F1-F5 (@c ESC [ [ A .. @c E) are consumed without action. A control byte
@@ -6233,6 +6695,9 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
     if (b == ASCII_ESC) {
       cli->esc_state = ESC_STATE_ESC;
       cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+      cli->esc_param_last = 0;
+#endif
     } else {
       consumed = False; /* not an escape byte */
     }
@@ -6272,28 +6737,64 @@ static bool cli_process_escape(cli_struct_t *cli, int b, bool dispatch) {
     } else if (is_param) {
       if (b == ';' || b == ':') {
         if (cli->esc_state == ESC_STATE_CSI || cli->esc_state == ESC_STATE_CSI_PARAM) {
-          cli->esc_state = ESC_STATE_CSI_REST; /* further parameters are ignored */
+          cli->esc_state = ESC_STATE_CSI_REST; /* further parameters: only the last is kept */
         }
+#if CLI_ENABLE_LINE_WRAP
+        cli->esc_param_last = 0;
+#endif
       } else if (b >= '<') {
         cli->esc_state = ESC_STATE_CSI_IGNORE; /* private marker: not a key we know */
-      } else {
+      }
+#if CLI_ENABLE_LINE_WRAP
+      else if (cli->esc_state == ESC_STATE_CSI_REST && b <= ASCII_DIGIT_9) {
+        int digit = b - ASCII_DIGIT_0;
+        if (cli->esc_param_last <= (ESC_PARAM_MAX - digit) / 10) {
+          cli->esc_param_last = cli->esc_param_last * 10 + digit;
+        } else {
+          cli->esc_param_last = ESC_PARAM_MAX;
+        }
+      }
+#endif
+      else {
         /* Digits of an ignored parameter. */
       }
     } else if (is_inter) {
       cli->esc_state = ESC_STATE_CSI_IGNORE;
     } else if (is_final) {
-      if (dispatch && cli->esc_state != ESC_STATE_CSI_IGNORE) {
+#if CLI_ENABLE_LINE_WRAP
+      if (b == 'R' && cli->esc_state == ESC_STATE_CSI_REST && cli->term_width_query) {
+        /* The reply to cli_term_width_query(): ESC [ row ; column R, taken at the far right.
+         * Only while a reply is awaited: the same bytes are a modified F3 on some
+         * terminals. */
+        if (cli->esc_param_last > 0) {
+          cli->term_width = (uint16_t)cli->esc_param_last;
+        }
+        cli->term_width_query = False;
+      } else
+#endif
+          if (dispatch && cli->esc_state != ESC_STATE_CSI_IGNORE) {
         handle_csi(cli, (char)b);
+      } else {
+        /* Consumed without action (credential input, an unknown sequence). */
       }
       cli->esc_state = ESC_STATE_NORMAL;
       cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+      cli->esc_param_last = 0;
+#endif
     } else if (b == ASCII_ESC) {
       cli->esc_state = ESC_STATE_ESC; /* Abort and start a new sequence. */
       cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+      cli->esc_param_last = 0;
+#endif
     } else {
       /* Control byte inside the sequence: abort it and let the caller handle the byte. */
       cli->esc_state = ESC_STATE_NORMAL;
       cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+      cli->esc_param_last = 0;
+#endif
       consumed = False;
     }
     break;

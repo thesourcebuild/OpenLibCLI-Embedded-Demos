@@ -134,13 +134,13 @@ void cli_demo_setup(UART_HandleTypeDef *huart) {
     cli_init(&s_cli, "MCU", &transport, &platform, s_cmd_pool, sizeof(s_cmd_pool) / sizeof(s_cmd_pool[0]));
     cli_register_commands(&s_cli);
 		
-		//>! set to false for non ANSI/VT100 terminal
-		//  cli_set_ansi_supported(&s_cli, false);
-		
-		//>! Normally for RTOS/Baremetal MCUs environment
-		cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
-		cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
-		cli_set_auth_failure_mode(&s_cli, CLI_AUTH_FAILURE_MODE_LOCKOUT);
+	//>! set to false for non ANSI/VT100 terminal
+	//  cli_set_ansi_supported(&s_cli, false);
+
+	//>! Normally for RTOS/Baremetal MCUs environment
+	cli_set_exit_root_policy(&s_cli, CLI_EXIT_ROOT_POLICY_RESET_SESSION);
+	cli_set_quit_policy(&s_cli, CLI_QUIT_POLICY_RESET_SESSION);
+	cli_set_auth_failure_mode(&s_cli, CLI_AUTH_FAILURE_MODE_LOCKOUT);
 
     s_session_id++;
     memset(&s_app, 0, sizeof(s_app));

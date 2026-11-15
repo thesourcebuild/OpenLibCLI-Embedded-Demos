@@ -1,13 +1,30 @@
 menu "OpenLibCLI Telnet Demo Configuration"
 
+    choice CLI_LED_TYPE
+        prompt "Built-in LED type"
+        default CLI_LED_TYPE_WS2812 if IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32S3
+        default CLI_LED_TYPE_GPIO
+        help
+            How the built-in LED is driven. The default follows the target's
+            common dev board: a plain LED on the ESP32 DevKitC, an addressable
+            RGB LED (WS2812) on the ESP32-C3/C6 DevKitM and ESP32-S3 DevKitC-1.
+
+        config CLI_LED_TYPE_GPIO
+            bool "Plain LED on a GPIO"
+        config CLI_LED_TYPE_WS2812
+            bool "Addressable RGB LED (WS2812, driven by RMT)"
+            depends on SOC_RMT_SUPPORTED
+    endchoice
+
     config CLI_LED_GPIO
         int "Built-in LED GPIO number"
-        range 0 48
+        range 0 SOC_GPIO_OUT_RANGE_MAX
         default 8 if IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32H2
         default 48 if IDF_TARGET_ESP32S3
         default 2
         help
-            GPIO number for the built-in LED. The default follows the target's
-            common dev board: ESP32 DevKitC=2, ESP32-C3/C6/H2 DevKitM=8,
-            ESP32-S3 DevKitC=48.
+            GPIO number of the built-in LED (of an RGB LED, its data input). The
+            default follows the target's common dev board: ESP32 DevKitC=2,
+            ESP32-C3/C6 DevKitM=8, ESP32-S3 DevKitC-1=48. ESP32-S3-DevKitC-1
+            v1.1 boards wire the RGB LED to GPIO38 instead: set 38 for them.
 endmenu

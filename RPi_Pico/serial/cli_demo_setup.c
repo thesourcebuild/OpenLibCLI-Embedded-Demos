@@ -13,33 +13,12 @@
  *
  *  CMake sets CLI_HAS_CYW43 for Pico W / Pico 2 W.
  *  Otherwise we fall back to PICO_DEFAULT_LED_PIN when available.
- *  On other boards the LED hooks are disabled.
+ *  On other boards the 'led' command reports that there is no LED.
  *--------------------------------------------------------------------*/
 #if defined(CLI_HAS_CYW43)
 #include "pico/cyw43_arch.h"
-#define CLI_LED_INIT() \
-  cyw43_arch_init();   \
-  cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0)
-#define CLI_LED_ON() cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1)
-#define CLI_LED_OFF() cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0)
-#define CLI_LED_DEINIT() cyw43_arch_deinit()
 #elif defined(PICO_DEFAULT_LED_PIN)
 #include "hardware/gpio.h"
-#define CLI_LED_INIT()                            \
-  do                                              \
-  {                                               \
-    gpio_init(PICO_DEFAULT_LED_PIN);              \
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT); \
-    gpio_put(PICO_DEFAULT_LED_PIN, 0);            \
-  } while (0)
-#define CLI_LED_ON() gpio_put(PICO_DEFAULT_LED_PIN, 1)
-#define CLI_LED_OFF() gpio_put(PICO_DEFAULT_LED_PIN, 0)
-#define CLI_LED_DEINIT()
-#else
-#define CLI_LED_INIT()
-#define CLI_LED_ON()
-#define CLI_LED_OFF()
-#define CLI_LED_DEINIT()
 #endif
 
 #ifndef CLI_MAX_COMMANDS
@@ -73,6 +52,12 @@ static cli_struct_t s_cli;
 static cli_cmd_struct_t s_cmd_pool[CLI_MAX_COMMANDS];
 static uint32_t s_session_id = 0;
 
+static bool s_led_ready = false; /* the LED could be set up: 'led' drives it */
+
+static bool cli_led_init(void);
+static void cli_led_deinit(void);
+static void cli_led_set(bool on);
+
 static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
 static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
 static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
@@ -92,7 +77,7 @@ void cli_demo_setup(void)
 
   cli_demo_shutdown();
 
-  CLI_LED_INIT();
+  s_led_ready = cli_led_init();
 
   memset(&platform, 0, sizeof(platform));
   platform.now_sec = pico_now_sec;
@@ -149,7 +134,7 @@ void cli_demo_poll(void)
 void cli_demo_shutdown(void)
 {
   cli_done(&s_cli);
-  CLI_LED_DEINIT();
+  cli_led_deinit();
 }
 
 uint8_t cli_demo_is_running(void)
@@ -179,23 +164,70 @@ static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
     cli_error(cli, "Usage: led <on|off>");
     rc = CLI_ERR;
   }
-  else if (strcmp(argv[1], "on") == 0)
-  {
-    CLI_LED_ON();
-    cli_println(cli, "LED turned on");
-  }
-  else if (strcmp(argv[1], "off") == 0)
-  {
-    CLI_LED_OFF();
-    cli_println(cli, "LED turned off");
-  }
-  else
+  else if (strcmp(argv[1], "on") != 0 && strcmp(argv[1], "off") != 0)
   {
     cli_error(cli, "Invalid state. Use 'on' or 'off'");
     rc = CLI_ERR;
   }
+  else if (!s_led_ready)
+  {
+    cli_error(cli, "LED not available");
+    rc = CLI_ERR;
+  }
+  else
+  {
+    cli_led_set(strcmp(argv[1], "on") == 0);
+    cli_println(cli, "LED turned %s", argv[1]);
+  }
 
   return rc;
+}
+
+/* Set up the LED, switched off; false when this board has none that can be driven. */
+static bool cli_led_init(void)
+{
+  bool ready = false;
+
+#if defined(CLI_HAS_CYW43)
+  /* Fails where the WiFi chip that drives the LED is missing (a plain Pico running a
+   * pico_w build): the LED is then left alone. */
+  if (cyw43_arch_init() == 0)
+  {
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+    ready = true;
+  }
+#elif defined(PICO_DEFAULT_LED_PIN)
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+  gpio_put(PICO_DEFAULT_LED_PIN, 0);
+  ready = true;
+#endif
+
+  return ready;
+}
+
+/* Release what cli_led_init() set up. */
+static void cli_led_deinit(void)
+{
+#if defined(CLI_HAS_CYW43)
+  if (s_led_ready)
+  {
+    cyw43_arch_deinit();
+  }
+#endif
+  s_led_ready = false;
+}
+
+/* Switch the LED on or off (only once cli_led_init() succeeded). */
+static void cli_led_set(bool on)
+{
+#if defined(CLI_HAS_CYW43)
+  cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, on);
+#elif defined(PICO_DEFAULT_LED_PIN)
+  gpio_put(PICO_DEFAULT_LED_PIN, on);
+#else
+  (void)on;
+#endif
 }
 
 static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[])

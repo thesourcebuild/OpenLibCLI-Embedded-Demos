@@ -7,4 +7,4 @@ idf_component_register(SRCS "main.c"
                             "OpenLibCLI"
                             "OpenLibCLI/config"
                             "OpenLibCLI/utils"
-                    REQUIRES esp_driver_uart esp_driver_gpio esp_timer)
+                    REQUIRES esp_driver_uart esp_driver_usb_serial_jtag vfs esp_driver_gpio esp_timer)

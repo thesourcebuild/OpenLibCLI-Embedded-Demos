@@ -149,6 +149,8 @@ static void cli_demo_session_start(void)
 
   cli_init(&s_cli, "Pico", &s_transport, &platform,
            s_cmd_pool, sizeof(s_cmd_pool) / sizeof(s_cmd_pool[0]));
+  /* The client's window width (NAWS) goes to the line editor, also after a resize. */
+  cli_transport_telnet_set_session(&s_telnet_ctx, &s_cli);
   cli_register_commands(&s_cli);
 
   cli_set_ansi_supported(&s_cli, true);

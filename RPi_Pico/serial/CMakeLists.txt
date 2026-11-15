@@ -38,10 +38,11 @@ if (EXISTS ${picoVscode})
 endif()
 # ====================================================================================
 # Board type — change this for your hardware:
-#   Pico       → pico     (LED on GPIO 25)  <-- default
-#   Pico W     → pico_w   (LED on CYW43 WL GPIO)
+#   Pico       → pico     (LED on GPIO 25)
+#   Pico W     → pico_w   (LED on CYW43 WL GPIO)  <-- default
 #   Pico 2     → pico2    (LED on GPIO 25)
 #   Pico 2 W   → pico2_w  (LED on CYW43 WL GPIO)
+# A pico_w build also runs on a plain Pico, without the LED ('led' reports it unavailable).
 set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)

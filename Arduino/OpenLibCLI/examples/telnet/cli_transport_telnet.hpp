@@ -52,6 +52,9 @@ typedef struct {
   uint8_t state;
   uint8_t verb;
   uint16_t sb_len; /* bytes consumed in the current sub-negotiation */
+  uint8_t sb_buf[5]; /* its start: option and the NAWS window size (width, height) */
+  uint16_t window_width; /* client window width (NAWS), 0 until reported */
+  cli_struct_t *cli;     /* session told about window size changes, or NULL */
   bool negotiated;
   bool local_echo;
   bool local_sga;
@@ -104,6 +107,19 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, void *client_
  * @param[in] ctx  Telnet context.
  */
 void cli_transport_telnet_negotiate(cli_telnet_ctx_struct_t *ctx);
+
+/**
+ * @brief Tell a CLI session the client's window width, now and whenever it changes.
+ *
+ * The client reports its window size (NAWS) when the connection starts and after each
+ * resize; the session's line editor uses the width for lines longer than one row
+ * (@c cli_set_terminal_width()). Call after @c cli_init(); a width already reported is
+ * passed on at once.
+ *
+ * @param[in] ctx  Telnet context.
+ * @param[in] cli  Session using this connection, or @c NULL to stop.
+ */
+void cli_transport_telnet_set_session(cli_telnet_ctx_struct_t *ctx, cli_struct_t *cli);
 
 /**
  * @brief Check if the underlying network client is still connected.

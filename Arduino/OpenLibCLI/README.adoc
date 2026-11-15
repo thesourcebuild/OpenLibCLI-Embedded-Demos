@@ -28,5 +28,6 @@ This Arduino library package contains the core CLI sources under `src/cli` and r
 
 == Notes
 
-* The Telnet example requires a compatible WiFi board and valid SSID/password.
+* The Telnet example requires a compatible WiFi board and valid SSID/password. It keeps trying to connect, and starts the Telnet server as soon as WiFi is up.
+* With `CLI_ENABLE_TIMMING_STATS` set to 1, the Serial example measures the engine's tick timing and shows it with `show stats`.
 * Demos are configured for static allocation behavior in the included cli_config headers.

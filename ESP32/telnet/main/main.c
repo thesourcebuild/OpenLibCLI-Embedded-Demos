@@ -1,3 +1,9 @@
+#include "soc/soc_caps.h"
+
+#if !SOC_WIFI_SUPPORTED
+#error "The Telnet demo needs a target with WiFi (e.g. ESP32, ESP32-S2/S3, ESP32-C3/C6): this target has none."
+#endif
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -130,7 +136,11 @@ void app_main(void)
       while (cli_demo_is_running() != 0U)
       {
         cli_demo_poll();
-        refuse_waiting_client(listen_fd);
+        /* A session that has just ended frees the server: the waiting client is accepted next. */
+        if (cli_demo_is_running() != 0U)
+        {
+          refuse_waiting_client(listen_fd);
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
       }
     }

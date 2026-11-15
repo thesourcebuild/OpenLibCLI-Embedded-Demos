@@ -714,6 +714,10 @@ struct cli_s {
                                                     @c nav_floor when it was reached:
                                                     what leaving a submenu that command
                                                     enters returns to. */
+  cli_cmd_handle_t exec_cmd[CLI_MAX_EXEC_DEPTH]; /**< For each running command, by nesting
+                                                    level: its node, or @c CLI_CMD_INVALID
+                                                    once it was removed while running (its
+                                                    slot may then hold another command). */
 
   /* --- hostname / prompt
    * ----------------------------------------------------------- */
@@ -731,6 +735,13 @@ struct cli_s {
   char input[CLI_MAX_INPUT_LEN]; /**< Current input line being assembled. */
   cli_len_t input_len;           /**< Number of valid characters in @c input[]. */
   cli_len_t cursor;              /**< Current cursor position within @c input[]. */
+#if CLI_ENABLE_LINE_WRAP
+  cli_len_t prompt_len;          /**< Columns of the prompt shown before the input. */
+  uint16_t term_width;           /**< Terminal width in columns, 0 when unknown: cursor motion
+                                      then ignores line wrapping (@c cli_set_terminal_width()). */
+  bool term_width_query;         /**< The terminal was asked for its width (cursor position
+                                      report) and the reply has not arrived yet. */
+#endif
 
   /* --- session state
    * --------------------------------------------------------------- */
@@ -875,6 +886,10 @@ struct cli_s {
    * ------------------------------------------ */
   uint8_t esc_state; /**< Current escape-sequence parser state. */
   int esc_param;     /**< First CSI numeric parameter (saturated). */
+#if CLI_ENABLE_LINE_WRAP
+  int esc_param_last; /**< Last CSI numeric parameter (saturated): the column of a cursor
+                           position report. */
+#endif
   uint8_t eol_prev;  /**< Line-ending byte (CR or LF) that just submitted a line, else 0; the
                         complementary byte of a CR LF / LF CR pair is then swallowed. */
 
@@ -1023,6 +1038,38 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli);
  * @param[in] enabled  True if terminal supports ANSI, false otherwise.
  */
 OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
+
+/**
+ * @brief Set the terminal width, for editing lines longer than one terminal row.
+ *
+ * On an ANSI terminal of known width the line editor follows the terminal's line
+ * wrapping: the cursor moves between the rows of a long line and the whole line is
+ * redrawn correctly. Without a width (0) a line longer than the terminal is still
+ * edited correctly in the buffer, but cursor motion on screen assumes a single row.
+ *
+ * The width is found by itself on most terminals: when the session starts and on
+ * Ctrl+L (redraw), an ANSI terminal of unknown width is asked for it (a cursor position
+ * report), and its reply sets it. A Telnet server learns it from the client's window
+ * size (NAWS) and passes it here whenever it changes; an explicit width also ends a
+ * pending query.
+ *
+ * Available when @c CLI_ENABLE_LINE_WRAP is set; otherwise it does nothing (cursor motion
+ * stays on a single row), so callers such as a Telnet transport need no condition.
+ *
+ * @param[in] cli      Active CLI session.
+ * @param[in] columns  Terminal width in columns; 0 = unknown.
+ */
+OPENLIBCLI_API void cli_set_terminal_width(cli_struct_t *cli, uint16_t columns);
+
+/**
+ * @brief Get the terminal width in use (see @c cli_set_terminal_width()).
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return Width in columns, or 0 when unknown (or @p cli is @c NULL, or
+ *         @c CLI_ENABLE_LINE_WRAP is not set).
+ */
+OPENLIBCLI_API uint16_t cli_get_terminal_width(const cli_struct_t *cli);
 
 /**
  * @brief Set the session hostname string (appears in the prompt).
@@ -1396,8 +1443,9 @@ OPENLIBCLI_API void cli_set_auth_lockout_duration(cli_struct_t *cli, uint32_t se
  * @param[in] parent      Handle of an existing command node, or
  *                        @c CLI_CMD_ROOT for a root-level command.
  * @param[in] name        Command keyword string: non-empty, shorter than
- *                        @c CLI_MAX_NAME_LEN, and free of whitespace, control
- *                        characters, @c ?, @c | and @c ".
+ *                        @c CLI_MAX_NAME_LEN, printable ASCII (no whitespace, control
+ *                        characters or bytes above 0x7E, which cannot be typed) and
+ *                        free of @c ?, @c | and @c ".
  * @param[in] callback    Handler invoked when the command is executed, or
  *                        @c NULL for pure sub-menu nodes.
  * @param[in] privilege   Minimum privilege level needed to see and run the command
@@ -1437,7 +1485,7 @@ OPENLIBCLI_API cli_cmd_handle_t cli_add_command(cli_struct_t *cli, cli_cmd_handl
  * @param[in] cli         Active CLI session.
  * @param[in] original    Handle of the command to duplicate. Handle returned by a prior @c
  * cli_add_command call.
- * @param[in] alias_name  New keyword for the alias (no spaces, no @c ?).
+ * @param[in] alias_name  New keyword for the alias; same rules as a command name.
  *
  * Sub-commands are not copied, so a command that has any cannot be duplicated (it
  * would be reachable without them); give it a name with @c cli_cmd_add_alias instead.
@@ -1714,6 +1762,10 @@ OPENLIBCLI_API cli_priv_t cli_get_privilege(const cli_struct_t *cli);
  * Use @c cli_println for line-at-a-time output to ensure pipe filtering
  * operates correctly on complete lines.
  *
+ * One call formats at most @c CLI_MAX_OUTPUT_BUF - 1 characters: longer text is cut
+ * off there (the return value is the full length). Print longer text in several calls;
+ * they make up one line until a @c \\n.
+ *
  * @param[in] cli  Active CLI session.
  * @param[in] fmt  printf-style format string.
  * @param[in] ...  Format arguments.
@@ -1739,6 +1791,10 @@ OPENLIBCLI_API int cli_print_p(cli_struct_t *cli, const char *fmt, ...);
  *
  * Prefer this function over @c cli_print for line-at-a-time output so that
  * pipe filtering sees whole logical lines.
+ *
+ * One call formats at most @c CLI_MAX_OUTPUT_BUF - 1 characters: longer text is cut
+ * off there (the return value is the full length). Print the start of a longer line
+ * with @c cli_print and end it with @c cli_println.
  *
  * @param[in] cli  Active CLI session.
  * @param[in] fmt  printf-style format string.
@@ -1790,7 +1846,9 @@ OPENLIBCLI_API void cli_print_flush(cli_struct_t *cli);
  * When set, every line emitted by @c cli_print, @c cli_println, and
  * @c cli_error is delivered to @p cb instead of the transport.  Pass
  * @c NULL to restore default transport-based output. Lines longer than
- * @c CLI_MAX_OUTPUT_BUF - 1 characters are delivered in several pieces.
+ * @c CLI_MAX_OUTPUT_BUF - 1 characters are delivered in several pieces (while a
+ * grep / exclude / begin filter is active, a piece may be shorter: its last characters
+ * go with the next piece so the pattern is never split).
  * The callback must not call @c cli_print / @c cli_println / @c cli_error itself
  * (the line it receives lives in the session's line buffer).
  * Available when @c CLI_ENABLE_PRINT_TRANSPORT_CB is set.

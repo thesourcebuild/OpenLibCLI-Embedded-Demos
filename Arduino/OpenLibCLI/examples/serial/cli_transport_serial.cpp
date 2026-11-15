@@ -26,25 +26,49 @@
  * Private Defines
  *=======================================================================================*/
 
-/* How a terminal holding the port open (DTR) is seen:
+/* How a terminal holding the port open is seen: the same test the core's own write()
+ * makes before it sends, read without side effects (no operator bool: it waits or runs
+ * the USB stack on several cores).
  * - ESP32 USB-Serial/JTAG port (HWCDC: ESP32-C3/C6/H2, and S3 in its default USB mode):
  *   not at all. The peripheral uses DTR / RTS only for chip reset and boot strapping and
  *   reports neither to firmware, so the port counts as always open. On an ESP32-S2/S3,
  *   "USB Mode: USB-OTG (TinyUSB)" puts Serial on the native USB stack, which reports DTR.
- * - ESP32 native USB (TinyUSB): the CDC interface's DTR, which its writes also follow
- *   (Serial's operator bool needs RTS as well).
- * - Any other core: arduino_serial_port_dtr(). */
-#define CLI_SERIAL_HOST_ALWAYS  0
-#define CLI_SERIAL_HOST_TINYUSB 1
-#define CLI_SERIAL_HOST_PORT    2
+ * - TinyUSB stacks: tud_cdc_connected() (DTR), which the writes of the ESP32 native USB
+ *   port, the UNO R4 Minima / Nano R4 port and the Arduino-Pico (Pico SDK USB) port test.
+ *   Not the UNO R4 SerialUSB.dtr(): it also turns off that core's own check for good.
+ * - Adafruit TinyUSB library: Serial.dtr(), the tud_cdc_n_connected() of Serial's own CDC
+ *   interface that its write() tests.
+ * - Arduino mbed cores (e.g. the mbed RP2040 core): the USB serial's connected(), the
+ *   terminal flag its write() tests (DTR, cleared on a USB reset too).
+ * - ATmega32U4 and SAMD native USB: DTR or RTS (line state > 0), the "port open" test of
+ *   the ATmega32U4 write() and of both cores' operator bool.
+ * - Anything else (a UART): always open. */
+#define CLI_SERIAL_HOST_ALWAYS     0
+#define CLI_SERIAL_HOST_TINYUSB    1
+#define CLI_SERIAL_HOST_PORT_DTR   2
+#define CLI_SERIAL_HOST_MBED       3
+#define CLI_SERIAL_HOST_LINE_STATE 4
 
 #if defined(ARDUINO_ARCH_ESP32) && ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_ALWAYS
 #elif defined(ARDUINO_ARCH_ESP32) && ARDUINO_USB_CDC_ON_BOOT
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_TINYUSB
 #include "esp32-hal-tinyusb.h"
+#elif defined(ARDUINO_ARCH_ESP32)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_ALWAYS
+#elif defined(USE_TINYUSB)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT_DTR
+#elif defined(ARDUINO_ARCH_MBED) && defined(SERIAL_CDC)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_MBED
+#include <USB/PluggableUSBSerial.h>
+#elif (defined(ARDUINO_ARCH_RENESAS) || defined(ARDUINO_ARCH_RP2040)) && !defined(ARDUINO_ARCH_MBED) && \
+    !defined(NO_USB)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_TINYUSB
+#include <tusb.h>
+#elif (defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_SAMD)) && defined(USBCON)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_LINE_STATE
 #else
-#define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_ALWAYS
 #endif
 
 /*=======================================================================================
@@ -174,20 +198,19 @@ static cli_transport_ret_t arduino_serial_flush(void *ctx) {
   return 0;
 }
 
-#if CLI_SERIAL_HOST == CLI_SERIAL_HOST_PORT
-/* DTR, where the port's class reports it: the native-USB serial of the AVR (ATmega32U4),
- * SAMD and RP2040 cores and Adafruit TinyUSB. It is a stored flag there, unlike operator
- * bool, which the ATmega32U4 core follows with delay(10). The int argument makes the call
- * prefer this overload; it drops out when the class has no dtr(). */
-template <typename Port>
-static auto arduino_serial_port_dtr(Port &port, int) -> decltype(static_cast<bool>(port.dtr())) {
-  return static_cast<bool>(port.dtr());
+#if CLI_SERIAL_HOST == CLI_SERIAL_HOST_LINE_STATE
+/* The native USB serial port (Serial_): open while the host sets DTR or RTS. Both are
+ * stored line-state bits; operator bool tests the same, but adds delay(10). Inline: a
+ * board whose Serial is a UART does not call it. */
+static inline bool arduino_serial_port_open(Serial_ &port) {
+  return port.dtr() || port.rts();
 }
 
-/* Any other port: operator bool (always true on a UART). */
+/* A board whose Serial is a UART (e.g. the Arduino Zero's EDBG port): always open. */
 template <typename Port>
-static bool arduino_serial_port_dtr(Port &port, long) {
-  return static_cast<bool>(port);
+static bool arduino_serial_port_open(Port &port) {
+  (void)port;
+  return true;
 }
 #endif
 
@@ -195,14 +218,30 @@ static bool arduino_serial_port_dtr(Port &port, long) {
 static bool arduino_serial_host_present(void) {
 #if CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB
   bool host = tud_cdc_connected(); /* Serial is CDC interface 0 */
-#elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_PORT
-  bool host = arduino_serial_port_dtr(Serial, 0);
+#elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_PORT_DTR
+  bool host = (Serial.dtr() != 0);
+#elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_MBED
+  bool host = _SerialUSB.connected(); /* the USB serial behind Serial */
+#elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_LINE_STATE
+  bool host = arduino_serial_port_open(Serial);
 #else
   bool host = true;
 #endif
 
   return host;
 }
+
+#if defined(ARDUINO_ARCH_RENESAS) && (CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB)
+/* The UNO R4 core's read() refuses input while no terminal holds the port, so
+ * arduino_serial_available() cannot drain it: it is dropped here as it arrives instead.
+ * TinyUSB calls this from tud_task() (mostly run by the USB interrupt on this core), the
+ * same place that fills the receive FIFO. */
+extern "C" void tud_cdc_rx_cb(uint8_t itf) {
+  if (!tud_cdc_n_connected(itf)) {
+    tud_cdc_n_read_flush(itf);
+  }
+}
+#endif
 
 /* Read whether a terminal holds the port open; a change is reported by the next
  * arduino_serial_available(). */

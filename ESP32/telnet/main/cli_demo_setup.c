@@ -5,32 +5,31 @@
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "driver/gpio.h"
 #include "sdkconfig.h"
+#if CONFIG_CLI_LED_TYPE_WS2812
+#include "led_strip.h"
+#else
+#include "driver/gpio.h"
+#endif
 #include "OpenLibCLI/cli.h"
 #include "OpenLibCLI/cli_version.h"
 #include "OpenLibCLI/utils/cli_args_parse.h"
 #include "cli_transport_telnet.h"
 #include "cli_demo_setup.h"
 
-/* Built-in LED GPIO: menuconfig "OpenLibCLI Telnet Demo Configuration". Its default
- * follows the target's common dev board:
- *   ESP32 DevKitC           → GPIO2
- *   ESP32-C3/C6/H2 DevKitM  → GPIO8
- *   ESP32-S3 DevKitC        → GPIO48
+/* Built-in LED: menuconfig "OpenLibCLI Telnet Demo Configuration" (type and GPIO). The
+ * defaults follow the target's common dev board:
+ *   ESP32 DevKitC           → plain LED on GPIO2
+ *   ESP32-C3/C6 DevKitM     → WS2812 RGB LED on GPIO8
+ *   ESP32-S3 DevKitC-1      → WS2812 RGB LED on GPIO48 (GPIO38 on v1.1 boards)
  */
 #define CLI_LED_GPIO CONFIG_CLI_LED_GPIO
 
-#define CLI_LED_INIT()                                  \
-  do                                                    \
-  {                                                     \
-    gpio_reset_pin(CLI_LED_GPIO);                       \
-    gpio_set_direction(CLI_LED_GPIO, GPIO_MODE_OUTPUT); \
-    gpio_set_level(CLI_LED_GPIO, 0);                    \
-  } while (0)
-#define CLI_LED_ON() gpio_set_level(CLI_LED_GPIO, 1)
-#define CLI_LED_OFF() gpio_set_level(CLI_LED_GPIO, 0)
-#define CLI_LED_DEINIT()
+#if CONFIG_CLI_LED_TYPE_WS2812
+/* Level (0-255) of each colour of the RGB LED when on: a dim white, as full level glares
+ * at close range. */
+#define CLI_LED_RGB_LEVEL 32U
+#endif
 
 #ifndef CLI_MAX_COMMANDS
 #define CLI_MAX_COMMANDS 20
@@ -68,6 +67,15 @@ static cli_transport_struct_t s_transport;
 
 static bool s_initialised = false;
 
+static bool s_led_initialised = false;
+static bool s_led_ready = false; /* the LED could be set up: 'led' drives it */
+#if CONFIG_CLI_LED_TYPE_WS2812
+static led_strip_handle_t s_led_strip = NULL;
+#endif
+
+static bool cli_led_init(void);
+static bool cli_led_set(bool on);
+
 static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd,
                                cli_argc_t argc, const char *argv[]);
 static int8_t cmd_led(cli_struct_t *cli, const char *cmd,
@@ -92,7 +100,13 @@ void cli_demo_setup(int client_fd)
 
   cli_demo_shutdown();
 
-  CLI_LED_INIT();
+  /* Prepared once, with the first session: the LED keeps the state a previous user left
+   * it in. */
+  if (!s_led_initialised)
+  {
+    s_led_ready = cli_led_init();
+    s_led_initialised = true;
+  }
 
   memset(&platform, 0, sizeof(platform));
   platform.now_sec = esp_now_sec;
@@ -103,6 +117,8 @@ void cli_demo_setup(int client_fd)
 
   cli_init(&s_cli, "ESP32", &s_transport, &platform,
            s_cmd_pool, sizeof(s_cmd_pool) / sizeof(s_cmd_pool[0]));
+  /* The client's window width (NAWS) goes to the line editor, also after a resize. */
+  cli_transport_telnet_set_session(&s_telnet_ctx, &s_cli);
   cli_register_commands(&s_cli);
 
   cli_set_ansi_supported(&s_cli, true);
@@ -198,22 +214,75 @@ static int8_t cmd_led(cli_struct_t *cli, const char *cmd,
     cli_error(cli, "Usage: led <on|off>");
     rc = CLI_ERR;
   }
-  else if (strcmp(argv[1], "on") == 0)
-  {
-    CLI_LED_ON();
-    cli_println(cli, "LED turned on");
-  }
-  else if (strcmp(argv[1], "off") == 0)
-  {
-    CLI_LED_OFF();
-    cli_println(cli, "LED turned off");
-  }
-  else
+  else if (strcmp(argv[1], "on") != 0 && strcmp(argv[1], "off") != 0)
   {
     cli_error(cli, "Invalid state. Use 'on' or 'off'");
     rc = CLI_ERR;
   }
+  else if (!s_led_ready || !cli_led_set(strcmp(argv[1], "on") == 0))
+  {
+    cli_error(cli, "LED not available");
+    rc = CLI_ERR;
+  }
+  else
+  {
+    cli_println(cli, "LED turned %s", argv[1]);
+  }
   return rc;
+}
+
+/* Set up the built-in LED, switched off; false when it cannot be driven. */
+static bool cli_led_init(void)
+{
+#if CONFIG_CLI_LED_TYPE_WS2812
+  const led_strip_config_t strip_config = {
+      .strip_gpio_num = CLI_LED_GPIO,
+      .max_leds = 1,
+      .led_model = LED_MODEL_WS2812,
+      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+  };
+  const led_strip_rmt_config_t rmt_config = {
+      .clk_src = RMT_CLK_SRC_DEFAULT,
+      .resolution_hz = 10U * 1000U * 1000U, /* 0.1 us steps for the WS2812 bit timing */
+  };
+  bool ready = (led_strip_new_rmt_device(&strip_config, &rmt_config, &s_led_strip) == ESP_OK);
+
+  if (ready)
+  {
+    ready = (led_strip_clear(s_led_strip) == ESP_OK);
+  }
+#else
+  bool ready = (gpio_reset_pin(CLI_LED_GPIO) == ESP_OK) &&
+               (gpio_set_direction(CLI_LED_GPIO, GPIO_MODE_OUTPUT) == ESP_OK) &&
+               (gpio_set_level(CLI_LED_GPIO, 0) == ESP_OK);
+#endif
+
+  return ready;
+}
+
+/* Switch the built-in LED on or off; false when that failed. */
+static bool cli_led_set(bool on)
+{
+#if CONFIG_CLI_LED_TYPE_WS2812
+  esp_err_t err;
+
+  if (on)
+  {
+    err = led_strip_set_pixel(s_led_strip, 0, CLI_LED_RGB_LEVEL, CLI_LED_RGB_LEVEL, CLI_LED_RGB_LEVEL);
+    if (err == ESP_OK)
+    {
+      err = led_strip_refresh(s_led_strip);
+    }
+  }
+  else
+  {
+    err = led_strip_clear(s_led_strip);
+  }
+#else
+  esp_err_t err = gpio_set_level(CLI_LED_GPIO, on ? 1U : 0U);
+#endif
+
+  return (err == ESP_OK);
 }
 
 static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd,

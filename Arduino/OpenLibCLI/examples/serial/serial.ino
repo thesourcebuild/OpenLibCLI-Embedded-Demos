@@ -43,7 +43,11 @@
  * Private Defines
  *=======================================================================================*/
 #ifndef CLI_MAX_COMMANDS
+#if CLI_ENABLE_TIMMING_STATS
+#define CLI_MAX_COMMANDS 14 /* every command below, 'clear' (ANSI terminals) and 'show stats' included */
+#else
 #define CLI_MAX_COMMANDS 13 /* every command below, 'clear' included (ANSI terminals) */
+#endif
 #endif
 
 /** Uncomment exactly one: */
@@ -66,6 +70,8 @@
 /** @brief Fallback built-in LED pin for boards that do not define LED_BUILTIN. */
 #if defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
   #define LED_PIN PA5   // STM32 Nucleo F103RB: LED on GPIOA pin 5
+#elif (defined(ESP32) || defined(ARDUINO_ARCH_ESP32)) && defined(LED_BUILTIN)
+  #define LED_PIN LED_BUILTIN // the board's LED; digitalWrite() also drives an RGB one (S3/C3/C6 DevKits)
 #elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32) || defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   #define LED_PIN 2    // ESP32/ESP8266 Dev Module: LED on GPIO2
 #else
@@ -80,9 +86,6 @@
 
 /** @brief Maximum time to wait for USB CDC serial to attach. */
 #define USB_WAIT_MS (3000UL)
-
-/** @brief Period between optional timing-stat printouts. */
-#define CLI_STATS_PERIOD_MS 1000UL
 
 /** @brief MOTD banner displayed by the Arduino serial demo session. */
 #define CLI_DEMO_BANNER_SERIAL                                                                     \
@@ -120,6 +123,9 @@ static cli_cmd_struct_t s_cmd_pool[CLI_MAX_COMMANDS];
  *=======================================================================================*/
 
 static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
+#if CLI_ENABLE_TIMMING_STATS
+static int8_t cmd_show_stats(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
+#endif
 static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
 static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
 static int8_t cmd_calculator(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]);
@@ -135,7 +141,6 @@ static void cli_serial_poll(void);
 static uint32_t arduino_now_sec(void *ctx);
 #if CLI_ENABLE_TIMMING_STATS
 static uint32_t arduino_micros(void *ctx);
-static void arduino_print_tick_stats(void);
 #endif
 
 
@@ -166,23 +171,11 @@ void setup(void) {
  * @brief Poll the CLI session once per pass of the Arduino super-loop.
  *
  * The CLI engine is non-blocking in this demo, so each pass services any
- * available serial input and optionally prints timing statistics. Returning
- * lets the core run its own work between passes (e.g. the ESP8266 WiFi stack
- * and software watchdog, serialEvent()).
+ * available serial input. Returning lets the core run its own work between
+ * passes (e.g. the ESP8266 WiFi stack and software watchdog, serialEvent()).
  */
 void loop(void) {
-  static uint32_t last_print_ms = 0;
-  uint32_t now_ms;
-
   cli_serial_poll();
-
-  now_ms = (uint32_t)millis();
-  if ((now_ms - last_print_ms) >= CLI_STATS_PERIOD_MS) {
-#if CLI_ENABLE_TIMMING_STATS
-    arduino_print_tick_stats();
-#endif
-    last_print_ms = now_ms;
-  }
 }
 
 /*=======================================================================================
@@ -199,6 +192,22 @@ static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd, cli_argc_t ar
   cli_println(cli, "Transports  : Telnet, TCP, UDP, Serial (UART, stdin/stdout), pipe");
   return CLI_OK;
 }
+
+#if CLI_ENABLE_TIMMING_STATS
+/* Engine tick timing, shown on request: printed straight to Serial it would land in the
+ * middle of the line being typed. */
+static int8_t cmd_show_stats(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {
+  cli_tick_stats_struct_t stats;
+
+  (void)cmd;
+  (void)argc;
+  (void)argv;
+  cli_tick_stats_get(cli, &stats);
+  cli_println(cli, "poll us  min=%" PRIu32 "  max=%" PRIu32 "  avg=%" PRIu32 "  n=%" PRIu32,
+              stats.min_us, stats.max_us, stats.avg_us, stats.count);
+  return CLI_OK;
+}
+#endif
 
 static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {
   (void)cmd;
@@ -232,8 +241,10 @@ static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, co
 
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
   ESP.restart();
+#elif defined(ARDUINO_ARCH_MBED)
+  NVIC_SystemReset(); /* mbed cores (also the mbed RP2040 one, which defines ARDUINO_ARCH_RP2040) */
 #elif defined(ARDUINO_ARCH_RP2040)
-  rp2040.reboot();
+  rp2040.reboot(); /* Arduino-Pico core */
 #elif defined(ARDUINO_ARCH_RP2350) || defined(ARDUINO_ARCH_STM32) || defined(__arm__)
   NVIC_SystemReset();
 #else
@@ -338,6 +349,7 @@ static void cli_register_commands(cli_struct_t *cli) {
   if (cli->ansi_supported == true) {
     h_clear = cli_add_command(cli, CLI_CMD_ROOT, CLI_STR("clear"), cli_cmd_builtin_clear_screen,
                               CLI_PRIV_USER, CLI_MODE_ANY, CLI_STR("Clear screen"));
+    (void)h_clear; /* used only for the alias */
 
 #if CLI_ENABLE_ALIASES
     cli_cmd_add_alias(cli, h_clear, "cls");
@@ -348,6 +360,10 @@ static void cli_register_commands(cli_struct_t *cli) {
                                                   CLI_MODE_ANY, "Show info");
   cli_register_command(cli, h_show, "version", cmd_show_version, CLI_PRIV_USER, CLI_MODE_ANY,
                        "Version");
+#if CLI_ENABLE_TIMMING_STATS
+  cli_register_command(cli, h_show, "stats", cmd_show_stats, CLI_PRIV_USER, CLI_MODE_ANY,
+                       "Engine tick timing");
+#endif
 
   cli_register_command(cli, CLI_CMD_ROOT, "led", cmd_led, CLI_PRIV_USER, CLI_MODE_ANY,
                        "Set LED state (on/off)");
@@ -435,20 +451,6 @@ static uint32_t arduino_now_sec(void *ctx) {
 static uint32_t arduino_micros(void *ctx) {
   (void)ctx;
   return (uint32_t)micros();
-}
-
-static void arduino_print_tick_stats(void) {
-  cli_tick_stats_struct_t stats;
-
-  cli_tick_stats_get(&s_cli, &stats);
-  Serial.print("poll us  min=");
-  Serial.print(stats.min_us);
-  Serial.print("  max=");
-  Serial.print(stats.max_us);
-  Serial.print("  avg=");
-  Serial.print(stats.avg_us);
-  Serial.print("  n=");
-  Serial.println(stats.count);
 }
 #endif
 

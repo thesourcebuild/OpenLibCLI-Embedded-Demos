@@ -88,6 +88,10 @@ extern "C" {
 #define CLI_ENABLE_TAB_COMPLETION 1 /**< AVR: tab completion enabled. */
 #endif
 
+#ifndef CLI_ENABLE_LINE_WRAP
+#define CLI_ENABLE_LINE_WRAP 0 /**< AVR: cursor motion on a single row (saves flash). */
+#endif
+
 /*-----------------------------------------------------------------------------
  *  Session / Lifecycle
  *-----------------------------------------------------------------------------*/
@@ -226,6 +230,10 @@ extern "C" {
 
 #ifndef CLI_ENABLE_TAB_COMPLETION
 #define CLI_ENABLE_TAB_COMPLETION 1 /**< tab completion enabled. */
+#endif
+
+#ifndef CLI_ENABLE_LINE_WRAP
+#define CLI_ENABLE_LINE_WRAP 0 /**< cursor motion on a single row (saves flash). */
 #endif
 
 /*-----------------------------------------------------------------------------

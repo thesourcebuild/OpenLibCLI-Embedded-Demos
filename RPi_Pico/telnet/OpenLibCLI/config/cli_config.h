@@ -14,8 +14,8 @@
  *             CLI_MAX_ENABLE_SECRET_LEN 64
  *   Display:  CLI_MAX_PROMPT_LEN 64, CLI_MAX_BANNER_LEN 512, CLI_MAX_OUTPUT_BUF 1024
  *   Timing:   CLI_TRANSPORT_POLL_MS 1000, CLI_DEFAULT_IDLE_TIMEOUT_SEC 10
- *   Features: CLI_ENABLE_HISTORY 1, TAB_COMPLETION 1, COMMAND_HELP 1, BANNER 1,
- *             AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
+ *   Features: CLI_ENABLE_HISTORY 1, TAB_COMPLETION 1, LINE_WRAP 1, COMMAND_HELP 1,
+ *             BANNER 1, AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
  *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 1
  *
  * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
@@ -91,6 +91,13 @@ extern "C" {
 
 #ifndef CLI_ENABLE_TAB_COMPLETION
 #define CLI_ENABLE_TAB_COMPLETION 1 /**< Compile in tab-completion: 1 = enabled, 0 = omitted. */
+#endif
+
+#ifndef CLI_ENABLE_LINE_WRAP
+/**< Edit lines longer than one terminal row across their rows on an ANSI terminal of known
+       width (cli_set_terminal_width(), asked of the terminal): 1 = enabled, 0 = omitted
+       (cursor motion on a single row). */
+#define CLI_ENABLE_LINE_WRAP 1
 #endif
 
 /*=======================================================================================
@@ -201,7 +208,7 @@ extern "C" {
 #endif
 
 #ifndef CLI_DEFAULT_IDLE_TIMEOUT_SEC
-#define CLI_DEFAULT_IDLE_TIMEOUT_SEC 10 /**< Default idle timeout in seconds; 0 disables it. */
+#define CLI_DEFAULT_IDLE_TIMEOUT_SEC 30 /**< Default idle timeout in seconds; 0 disables it. */
 #endif
 
 #ifndef CLI_ENABLE_TIMMING_STATS

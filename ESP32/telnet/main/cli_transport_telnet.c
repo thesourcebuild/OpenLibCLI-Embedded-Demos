@@ -121,6 +121,8 @@ static const uint8_t s_telnet_negotiation[] = {
 static int telnet_fd_from_ctx(cli_telnet_ctx_struct_t *ctx);
 static void cli_telnet_respond(cli_telnet_ctx_struct_t *ctx, uint8_t verb, uint8_t opt);
 static bool cli_telnet_process_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte, uint8_t *out);
+static void cli_telnet_sb_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte);
+static void cli_telnet_sb_end(cli_telnet_ctx_struct_t *ctx);
 static cli_transport_ret_t cli_telnet_transport_available(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_read(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_write(void *raw_ctx, const uint8_t *buf, cli_transport_buflen_t len);
@@ -164,6 +166,7 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, int client_fd
     ctx->state = TELNET_STATE_NORMAL;
     ctx->verb = 0;
     ctx->sb_len = 0;
+    ctx->window_width = 0; /* the next client reports its own */
     ctx->negotiated = false;
     ctx->local_echo = false;
     ctx->local_sga = false;
@@ -197,6 +200,18 @@ void cli_transport_telnet_negotiate(cli_telnet_ctx_struct_t *ctx)
     ctx->local_sga = true;
     ctx->remote_linemode_rejected = true;
     ctx->remote_naws = true;
+  }
+}
+
+void cli_transport_telnet_set_session(cli_telnet_ctx_struct_t *ctx, cli_struct_t *cli)
+{
+  if (ctx)
+  {
+    ctx->cli = cli;
+    if (cli != NULL && ctx->window_width > 0U)
+    {
+      cli_set_terminal_width(cli, ctx->window_width);
+    }
   }
 }
 
@@ -532,34 +547,23 @@ static bool cli_telnet_process_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte, 
     {
       ctx->state = TELNET_STATE_SB_IAC;
     }
-    else if (++ctx->sb_len > CLI_TELNET_MAX_SB_LEN)
-    {
-      /* No IAC SE in sight (broken client): give up on the block so input is not
-       * swallowed forever. The remaining bytes are treated as normal data. */
-      ctx->state = TELNET_STATE_NORMAL;
-    }
     else
     {
-      /* Sub-negotiation payload (e.g. NAWS size) is not used. */
+      cli_telnet_sb_byte(ctx, byte);
     }
     break;
 
   case TELNET_STATE_SB_IAC:
     if (byte == TELNET_SE)
     {
+      cli_telnet_sb_end(ctx);
       ctx->state = TELNET_STATE_NORMAL;
     }
     else if (byte == TELNET_IAC)
     {
       /* An escaped 0xFF is one payload byte: it counts towards the limit like any other. */
-      if (++ctx->sb_len > CLI_TELNET_MAX_SB_LEN)
-      {
-        ctx->state = TELNET_STATE_NORMAL;
-      }
-      else
-      {
-        ctx->state = TELNET_STATE_SB;
-      }
+      ctx->state = TELNET_STATE_SB;
+      cli_telnet_sb_byte(ctx, 0xFFU);
     }
     else
     {
@@ -575,6 +579,42 @@ static bool cli_telnet_process_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte, 
   }
 
   return stored;
+}
+
+/* Take one payload byte of a sub-negotiation (after IAC SB); its start (option, NAWS window
+ * size) is kept for cli_telnet_sb_end(). A block longer than CLI_TELNET_MAX_SB_LEN (no IAC SE
+ * from a broken client) is given up, so input is not swallowed forever: the remaining bytes
+ * are treated as normal data. */
+static void cli_telnet_sb_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte)
+{
+  if (ctx->sb_len < sizeof(ctx->sb_buf))
+  {
+    ctx->sb_buf[ctx->sb_len] = byte;
+  }
+  ctx->sb_len++;
+  if (ctx->sb_len > CLI_TELNET_MAX_SB_LEN)
+  {
+    ctx->state = TELNET_STATE_NORMAL;
+  }
+}
+
+/* A complete sub-negotiation (IAC SE). NAWS (RFC 1073) reports the client's window: width and
+ * height, 16 bits each, most significant byte first; a width of 0 means unknown. */
+static void cli_telnet_sb_end(cli_telnet_ctx_struct_t *ctx)
+{
+  if (ctx->sb_len >= 5U && ctx->sb_buf[0] == TELNET_OPT_NAWS)
+  {
+    uint16_t width = (uint16_t)(((uint16_t)ctx->sb_buf[1] << 8) | ctx->sb_buf[2]);
+
+    if (width > 0U)
+    {
+      ctx->window_width = width;
+      if (ctx->cli != NULL)
+      {
+        cli_set_terminal_width(ctx->cli, width);
+      }
+    }
+  }
 }
 
 /* Transport Callbacks ------------------------------------------------------------------*/

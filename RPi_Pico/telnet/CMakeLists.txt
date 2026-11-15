@@ -37,10 +37,8 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-# Board type — change this for your hardware:
-#   Pico       → pico     (LED on GPIO 25)  <-- default
-#   Pico W     → pico_w   (LED on CYW43 WL GPIO)
-#   Pico 2     → pico2    (LED on GPIO 25)
+# Board type — the Telnet demo needs WiFi, so a W board:
+#   Pico W     → pico_w   (LED on CYW43 WL GPIO)  <-- default
 #   Pico 2 W   → pico2_w  (LED on CYW43 WL GPIO)
 set(PICO_BOARD pico_w CACHE STRING "Board type")
 
