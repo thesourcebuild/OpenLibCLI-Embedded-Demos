@@ -1,5 +1,5 @@
 /**
- * @file arduino_serial_demo.ino
+ * @file serial.ino
  * @brief Arduino sketch - OpenLibCLI serial (UART) demo.
  *
  * This sketch is self-contained: it wires the transport, registers commands,
@@ -9,7 +9,7 @@
  * USB-CDC boards, the sketch waits briefly for the host to open the COM port
  * before starting the CLI.
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */
@@ -67,8 +67,10 @@
 #define CLI_DEMO_SUB_USAGE "Usage: sub <a> <b>"
 #endif
 
-/** @brief Fallback built-in LED pin for boards that do not define LED_BUILTIN. */
-#if defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
+/** @brief LED the led command drives: the board's LED_BUILTIN, or a fallback pin. */
+#if (defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)) && defined(LED_BUILTIN)
+  #define LED_PIN LED_BUILTIN // the board's LED (PA5 on a Nucleo F103RB, PC13 on a Blue Pill)
+#elif defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
   #define LED_PIN PA5   // STM32 Nucleo F103RB: LED on GPIOA pin 5
 #elif (defined(ESP32) || defined(ARDUINO_ARCH_ESP32)) && defined(LED_BUILTIN)
   #define LED_PIN LED_BUILTIN // the board's LED; digitalWrite() also drives an RGB one (S3/C3/C6 DevKits)

@@ -2,8 +2,8 @@ MIT License — OpenLibCLI Embedded Demos
 =========================================
 
 Original application code (Core/, examples/, and project-specific source
-files) is Copyright (c) 2026 Muhammad Hassaan Shah and licensed under
-the MIT license below.
+files) is Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah and
+licensed under the MIT license below.
 
 STM32CubeMX auto-generated files — including but not limited to Drivers/,
 startup_*.s, STM32F1xx_HAL_Driver/, CMSIS/, .ioc, and any code bearing
@@ -20,6 +20,8 @@ of their respective owners and are subject to their own license terms.
 =============================================================================
 
 MIT License
+
+Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

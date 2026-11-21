@@ -152,8 +152,7 @@ extern "C" {
 #define CLI_MAX_OUTPUT_BUF 48 /**< AVR: per-line output buffer (bytes). */
 #endif
 #ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
-#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves the buffer).  \
-                                         */
+#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves RAM). */
 #endif
 
 /*-----------------------------------------------------------------------------

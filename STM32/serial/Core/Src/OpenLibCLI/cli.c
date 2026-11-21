@@ -118,6 +118,7 @@
 #define CLI_AUTH_MAX_ATTEMPTS 3   /**< Failed login / enable attempts before the failure mode. */
 #define CLI_HELP_NAME_COL     22U /**< Column at which help text starts in command listings. */
 #define CLI_HELP_LINE_SIZE    (CLI_HELP_NAME_COL + CLI_MAX_NAME_LEN + CLI_MAX_HELP_LEN)
+#define CLI_TAB_STOP          8   /**< Columns between the terminal's tab stops. */
 
 /* ASCII Control Codes ------------------------------------------------------------------*/
 #define ASCII_NUL       0x00        /**< Null character. */
@@ -279,8 +280,8 @@ static void cli_flush(cli_struct_t *cli);
 
 static void cli_touch_activity_internal(cli_struct_t *cli);
 static void cli_idle_period_restart(cli_struct_t *cli);
-#if CLI_ENABLE_TIME_SOURCE &&                                                                      \
-    (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK || CLI_ENABLE_AUTH)
+#if CLI_ENABLE_TIME_SOURCE && (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK ||          \
+                               CLI_ENABLE_AUTH || CLI_ENABLE_LINE_WRAP)
 static uint32_t cli_rebase_ts(uint32_t ts, bool had_clock, uint32_t old_now, uint32_t new_now);
 #endif
 #if CLI_ENABLE_TIME_SOURCE && ENV_IS_OS_ENVIRONMENT
@@ -323,6 +324,7 @@ static void cli_redisplay_input(cli_struct_t *cli);
 static bool cli_wrap_aware(const cli_struct_t *cli);
 static void cli_cursor_step(cli_struct_t *cli, uint32_t from, uint32_t to, char back, char fwd);
 static void cli_cursor_settle(cli_struct_t *cli, cli_len_t pos);
+static size_t cli_text_escape_len(const char *s);
 static cli_len_t cli_text_columns(const char *s);
 static void cli_term_width_query(cli_struct_t *cli);
 #if CLI_ENABLE_TIME_SOURCE
@@ -517,6 +519,7 @@ static int8_t cli_submit_line(cli_struct_t *cli);
 
 /* Escape-Sequence State Machine --------------------------------------------------------*/
 static cli_esc_result_enum_t cli_process_escape(cli_struct_t *cli, int b, bool dispatch);
+static void cli_escape_reset(cli_struct_t *cli);
 static void handle_csi(cli_struct_t *cli, char final);
 
 /*=======================================================================================
@@ -1449,7 +1452,8 @@ OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled) {
 OPENLIBCLI_API void cli_set_terminal_width(cli_struct_t *cli, uint16_t columns) {
 #if CLI_ENABLE_LINE_WRAP
   if (cli != NULL) {
-    cli->term_width_query = False; /* this width replaces what a pending reply would set */
+    /* A pending query is left waiting: its reply must still be taken as the terminal's,
+     * not as a key (see cli_set_terminal_width() in cli.h). */
     cli_term_width_apply(cli, columns);
   }
 #else
@@ -1579,10 +1583,12 @@ OPENLIBCLI_API int8_t cli_set_mode_name(cli_struct_t *cli, cli_mode_t mode, cons
 OPENLIBCLI_API void cli_set_time_source(cli_struct_t *cli, cli_time_fn fn, void *ctx) {
 #if CLI_ENABLE_TIME_SOURCE
   if (cli != NULL) {
-#if CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK || CLI_ENABLE_AUTH
+#if CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK || CLI_ENABLE_AUTH ||                 \
+    CLI_ENABLE_LINE_WRAP
     /* Timestamps taken from the old clock mean nothing on the new one. A running period
-     * (idle time, periodic interval, login lockout) keeps the time it has already run and
-     * continues from now on the new clock; without an old clock it starts now. */
+     * (idle time, periodic interval, login lockout, width query) keeps the time it has
+     * already run and continues from now on the new clock; without an old clock it starts
+     * now. */
     bool had_clock = (cli->time_source != NULL);
     uint32_t old_now = had_clock ? cli->time_source(cli->time_source_ctx) : 0U;
     uint32_t new_now = (fn != NULL) ? fn(ctx) : 0U;
@@ -2822,12 +2828,8 @@ static void cli_touch_activity_internal(cli_struct_t *cli) {
   cli_idle_period_restart(cli);
 }
 
-/**
- * @brief Start a new idle period without counting it as user activity.
- * @param[in] cli  Active CLI session.
- */
-#if CLI_ENABLE_TIME_SOURCE &&                                                                      \
-    (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK || CLI_ENABLE_AUTH)
+#if CLI_ENABLE_TIME_SOURCE && (CLI_ENABLE_IDLE_TIMEOUT || CLI_ENABLE_PERIODIC_CALLBACK ||          \
+                               CLI_ENABLE_AUTH || CLI_ENABLE_LINE_WRAP)
 /**
  * @brief Move a timestamp from one clock to another, keeping the time elapsed since it.
  *
@@ -2843,6 +2845,10 @@ static uint32_t cli_rebase_ts(uint32_t ts, bool had_clock, uint32_t old_now, uin
 }
 #endif
 
+/**
+ * @brief Start a new idle period without counting it as user activity.
+ * @param[in] cli  Active CLI session.
+ */
 static void cli_idle_period_restart(cli_struct_t *cli) {
 #if CLI_ENABLE_IDLE_TIMEOUT && CLI_ENABLE_TIME_SOURCE
   if (cli != NULL && cli->time_source != NULL) {
@@ -3304,11 +3310,63 @@ static void cli_term_width_query_expire(cli_struct_t *cli) {
 #endif
 
 /**
- * @brief Count the terminal columns a prompt takes.
+ * @brief Measure the escape sequence a text starts with, as a terminal reads it
+ *        (ECMA-48, ECMA-35).
  *
- * Escape sequences (colours: <tt>ESC [ ... m</tt>, titles: <tt>ESC ] ... BEL</tt>) and
- * other control characters take none; a UTF-8 character takes one (its continuation bytes
- * none). Characters shown two columns wide (CJK) are counted as one.
+ * - CSI (<tt>ESC [</tt>, e.g. colours): parameter and intermediate bytes, then a final
+ *   byte.
+ * - Control strings (<tt>ESC ]</tt> OSC, e.g. a window title; <tt>ESC P</tt> DCS,
+ *   <tt>ESC X</tt> SOS, <tt>ESC ^</tt> PM, <tt>ESC _</tt> APC): up to BEL, or up to the
+ *   ESC of the closing <tt>ESC \\</tt>, a sequence of its own.
+ * - Any other: intermediate bytes, then a final byte (a character set: <tt>ESC ( B</tt>,
+ *   <tt>ESC # 8</tt>), or a final byte alone.
+ *
+ * A byte that cannot continue the sequence (a control character, another ESC, the end of
+ * the text) ends it early and is not part of it.
+ *
+ * @param[in] s  Text starting with ESC.
+ *
+ * @return Bytes of the sequence, at least 1 (the ESC).
+ */
+static size_t cli_text_escape_len(const char *s) {
+  size_t i = 1U;
+  unsigned char c = (unsigned char)s[1];
+
+  if (c == (unsigned char)ASCII_LSBRACKET) {
+    i++;
+    while ((unsigned char)s[i] >= 0x20U && (unsigned char)s[i] <= 0x3FU) {
+      i++;
+    }
+    if ((unsigned char)s[i] >= 0x40U && (unsigned char)s[i] <= 0x7EU) {
+      i++;
+    }
+  } else if (c == (unsigned char)']' || c == (unsigned char)'P' || c == (unsigned char)'X' ||
+             c == (unsigned char)'^' || c == (unsigned char)'_') {
+    i++;
+    while (s[i] != '\0' && s[i] != (char)ASCII_BELL && s[i] != (char)ASCII_ESC) {
+      i++;
+    }
+    if (s[i] == (char)ASCII_BELL) {
+      i++;
+    }
+  } else {
+    while ((unsigned char)s[i] >= 0x20U && (unsigned char)s[i] <= 0x2FU) {
+      i++;
+    }
+    if ((unsigned char)s[i] >= 0x30U && (unsigned char)s[i] <= 0x7EU) {
+      i++;
+    }
+  }
+
+  return i;
+}
+
+/**
+ * @brief Count the terminal columns a prompt takes, from the start of a row.
+ *
+ * Escape sequences (@c cli_text_escape_len()) and control characters take none, except
+ * a tab, which moves to the next tab stop. A UTF-8 character takes one (its continuation
+ * bytes none); characters shown two columns wide (CJK) are counted as one.
  *
  * @param[in] s  NUL-terminated prompt text.
  *
@@ -3322,27 +3380,14 @@ static cli_len_t cli_text_columns(const char *s) {
     unsigned char c = (unsigned char)s[i];
 
     if (c == (unsigned char)ASCII_ESC) {
-      i++;
-      if (s[i] == '[') {
-        /* CSI: parameter and intermediate bytes up to a final byte 0x40-0x7E. */
-        i++;
-        while (s[i] != '\0' && ((unsigned char)s[i] < 0x40U || (unsigned char)s[i] > 0x7EU)) {
-          i++;
-        }
-      } else if (s[i] == ']') {
-        /* OSC: up to BEL or ESC \ (the ESC is taken as the start of the next sequence). */
-        while (s[i] != '\0' && s[i] != (char)ASCII_BELL && s[i] != (char)ASCII_ESC) {
-          i++;
-        }
-      } else {
-        /* A two-byte sequence: its second byte is part of it. */
-      }
-      if (s[i] != '\0' && s[i] != (char)ASCII_ESC) {
-        i++; /* the final byte, BEL, or the second byte */
-      }
+      i += cli_text_escape_len(&s[i]);
     } else {
-      if (c >= 0x20U && c != (unsigned char)ASCII_DEL && (c & 0xC0U) != 0x80U) {
+      if (c == (unsigned char)ASCII_TAB) {
+        columns = (columns / CLI_TAB_STOP + 1) * CLI_TAB_STOP;
+      } else if (c >= 0x20U && c != (unsigned char)ASCII_DEL && (c & 0xC0U) != 0x80U) {
         columns++;
+      } else {
+        /* Another control character, or a UTF-8 continuation byte. */
       }
       i++;
     }
@@ -5939,6 +5984,20 @@ static bool cli_auth_lockout_expired(const cli_struct_t *cli) {
  * @param[in] cli  Active CLI session.
  */
 static void cli_auth_lockout_end(cli_struct_t *cli) {
+  bool reply_open = False; /* the terminal's width reply is being received */
+
+#if CLI_ENABLE_LINE_WRAP
+  reply_open = cli->term_width_query &&
+               (cli->esc_state == ESC_STATE_ESC || cli->esc_state == ESC_STATE_CSI ||
+                cli->esc_state == ESC_STATE_CSI_PARAM || cli->esc_state == ESC_STATE_CSI_REST);
+#endif
+  if (!reply_open) {
+    /* A sequence still open (a lone Esc) was typed during the lockout: it is discarded
+     * with the rest of that input, instead of taking the first keys typed after it. A
+     * width reply in progress (its rest may come in the next tick) is followed on. */
+    cli_escape_reset(cli);
+  }
+
   cli->auth_lockout_started_ts = 0UL;
   cli_idle_period_restart(cli); /* the idle timer was paused during the lockout */
 
@@ -6342,11 +6401,7 @@ static void cli_reset_input(cli_struct_t *cli) {
 static void cli_session_reset(cli_struct_t *cli) {
   cli_nav_reset(cli);
   cli_set_privilege(cli, CLI_PRIV_USER);
-  cli->esc_state = ESC_STATE_NORMAL;
-  cli->esc_param = 0;
-#if CLI_ENABLE_LINE_WRAP
-  cli->esc_param_last = 0;
-#endif
+  cli_escape_reset(cli);
   cli_reset_input(cli);
 #if CLI_ENABLE_IDLE_TIMEOUT
   cli->idle_armed = False; /* nothing to reset until the user types */
@@ -6932,11 +6987,7 @@ static cli_esc_result_enum_t cli_process_escape(cli_struct_t *cli, int b, bool d
         }
         result = CLI_ESC_KEY;
       }
-      cli->esc_state = ESC_STATE_NORMAL;
-      cli->esc_param = 0;
-#if CLI_ENABLE_LINE_WRAP
-      cli->esc_param_last = 0;
-#endif
+      cli_escape_reset(cli);
     } else if (b == ASCII_ESC) {
       cli->esc_state = ESC_STATE_ESC; /* Abort and start a new sequence. */
       cli->esc_param = 0;
@@ -6945,11 +6996,7 @@ static cli_esc_result_enum_t cli_process_escape(cli_struct_t *cli, int b, bool d
 #endif
     } else {
       /* Control byte inside the sequence: abort it and let the caller handle the byte. */
-      cli->esc_state = ESC_STATE_NORMAL;
-      cli->esc_param = 0;
-#if CLI_ENABLE_LINE_WRAP
-      cli->esc_param_last = 0;
-#endif
+      cli_escape_reset(cli);
       result = CLI_ESC_NONE;
     }
     break;
@@ -6983,6 +7030,20 @@ static cli_esc_result_enum_t cli_process_escape(cli_struct_t *cli, int b, bool d
   }
 
   return result;
+}
+
+/**
+ * @brief Return the escape-sequence parser to its initial state, dropping a sequence
+ *        received in part.
+ *
+ * @param[in] cli  Active CLI session.
+ */
+static void cli_escape_reset(cli_struct_t *cli) {
+  cli->esc_state = ESC_STATE_NORMAL;
+  cli->esc_param = 0;
+#if CLI_ENABLE_LINE_WRAP
+  cli->esc_param_last = 0;
+#endif
 }
 
 /**

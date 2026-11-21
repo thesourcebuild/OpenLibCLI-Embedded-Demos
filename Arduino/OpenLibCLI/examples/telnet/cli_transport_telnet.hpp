@@ -6,11 +6,13 @@
  * Arduino network client into @c cli_transport_struct_t while handling Telnet IAC
  * negotiation and stream parsing.
  *
- * @author open-libcli Project
+ * @author Muhammad Hassaan Shah
  * @date 2026-04-19
  * @version 1.0.0
  *
- * @copyright Copyright (c) 2026 open-libcli Project. All rights reserved.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
+ *
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef OPENLIBCLI_ARDUINO_CLI_TRANSPORT_TELNET_HPP

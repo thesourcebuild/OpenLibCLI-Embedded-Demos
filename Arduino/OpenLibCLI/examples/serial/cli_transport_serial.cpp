@@ -5,11 +5,13 @@
  * Implements byte read/write/flush callbacks backed by Arduino @c Serial and
  * binds them into a @c cli_transport_struct_t descriptor.
  *
- * @author open-libcli Project
+ * @author Muhammad Hassaan Shah
  * @date 2026-04-19
  * @version 1.0.0
  *
- * @copyright Copyright (c) 2026 open-libcli Project. All rights reserved.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
+ *
+ * SPDX-License-Identifier: MIT
  */
 
 /*=======================================================================================
@@ -39,7 +41,9 @@
  * - Adafruit TinyUSB library: Serial.dtr(), the tud_cdc_n_connected() of Serial's own CDC
  *   interface that its write() tests.
  * - STM32duino with Serial on USB ("USB support: CDC (generic 'Serial' supersede U(S)ART)"):
- *   Serial.dtr(), the DTR state its write() tests (CDC_connected()).
+ *   CDC_connected(), what its write() tests: the device is configured and DTR is set (DTR
+ *   alone stays set when the cable is pulled). Its Serial.flush() only waits, without a
+ *   limit, for queued output the core sends by itself: the transport has no flush there.
  * - Arduino mbed cores (e.g. the mbed RP2040 core): the USB serial's connected(), the
  *   terminal flag its write() tests (DTR, cleared on a USB reset too).
  * - ATmega32U4 and SAMD native USB: DTR or RTS (line state > 0), the "port open" test of
@@ -50,6 +54,7 @@
 #define CLI_SERIAL_HOST_PORT_DTR   2
 #define CLI_SERIAL_HOST_MBED       3
 #define CLI_SERIAL_HOST_LINE_STATE 4
+#define CLI_SERIAL_HOST_STM32_CDC  5
 
 #if defined(ARDUINO_ARCH_ESP32) && ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_ALWAYS
@@ -62,7 +67,8 @@
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT_DTR
 #elif defined(ARDUINO_ARCH_STM32) && defined(USBCON) && defined(USBD_USE_CDC) && \
     !defined(DISABLE_GENERIC_SERIALUSB)
-#define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT_DTR
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_STM32_CDC
+#include <usbd_cdc_if.h>
 #elif defined(ARDUINO_ARCH_MBED) && defined(SERIAL_CDC)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_MBED
 #include <USB/PluggableUSBSerial.h>
@@ -109,7 +115,9 @@ static bool s_host_changed;
 static cli_transport_ret_t arduino_serial_available(void *ctx);
 static cli_transport_ret_t arduino_serial_read(void *ctx);
 static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, cli_transport_buflen_t len);
+#if CLI_SERIAL_HOST != CLI_SERIAL_HOST_STM32_CDC
 static cli_transport_ret_t arduino_serial_flush(void *ctx);
+#endif
 static bool arduino_serial_host_present(void);
 static void arduino_serial_check_host(void);
 
@@ -125,7 +133,11 @@ void cli_transport_serial_init(cli_transport_struct_t *transport) {
     transport->available = arduino_serial_available;
     transport->read = arduino_serial_read;
     transport->write = arduino_serial_write;
+#if CLI_SERIAL_HOST == CLI_SERIAL_HOST_STM32_CDC
+    transport->flush = NULL; /* see CLI_SERIAL_HOST: writes are sent without one */
+#else
     transport->flush = arduino_serial_flush;
+#endif
 
     s_host = arduino_serial_host_present();
     s_host_changed = false;
@@ -207,11 +219,13 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
   return result;
 }
 
+#if CLI_SERIAL_HOST != CLI_SERIAL_HOST_STM32_CDC
 static cli_transport_ret_t arduino_serial_flush(void *ctx) {
   (void)ctx;
   Serial.flush();
   return 0;
 }
+#endif
 
 #if CLI_SERIAL_HOST == CLI_SERIAL_HOST_LINE_STATE
 /* The native USB serial port (Serial_): open while the host sets DTR or RTS. Both are
@@ -237,6 +251,8 @@ static bool arduino_serial_host_present(void) {
   bool host = (Serial.dtr() != 0);
 #elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_MBED
   bool host = _SerialUSB.connected(); /* the USB serial behind Serial */
+#elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_STM32_CDC
+  bool host = CDC_connected();
 #elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_LINE_STATE
   bool host = arduino_serial_port_open(Serial);
 #else
