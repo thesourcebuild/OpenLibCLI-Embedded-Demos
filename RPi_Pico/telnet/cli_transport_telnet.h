@@ -24,6 +24,8 @@ typedef struct {
   uint16_t sb_len; /* bytes consumed in the current sub-negotiation */
   uint8_t sb_buf[5]; /* its start: option and the NAWS window size (width, height) */
   uint16_t window_width; /* client window width (NAWS), 0 until reported */
+  bool window_width_due;    /* window_width still waits for the input sent before it */
+  uint16_t window_width_at; /* how much of rx_buf that input is */
   cli_struct_t *cli;     /* session told about window size changes, or NULL */
   bool negotiated;
   bool local_echo;

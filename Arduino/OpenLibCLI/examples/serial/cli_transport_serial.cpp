@@ -41,9 +41,12 @@
  * - Adafruit TinyUSB library: Serial.dtr(), the tud_cdc_n_connected() of Serial's own CDC
  *   interface that its write() tests.
  * - STM32duino with Serial on USB ("USB support: CDC (generic 'Serial' supersede U(S)ART)"):
- *   CDC_connected(), what its write() tests: the device is configured and DTR is set (DTR
- *   alone stays set when the cable is pulled). Its Serial.flush() only waits, without a
- *   limit, for queued output the core sends by itself: the transport has no flush there.
+ *   the device is configured (a pulled cable suspends it; DTR alone stays set) and DTR is
+ *   set. That is the core's CDC_connected() without its "host too slow" term: its write()
+ *   drops output the host has not taken within USB_CDC_TRANSMIT_TIMEOUT ms, and so does
+ *   the transport, but a host that is slow to read is still the same terminal. Its
+ *   Serial.flush() only waits, without a limit, for queued output the core sends by
+ *   itself: the transport has no flush there.
  * - Arduino mbed cores (e.g. the mbed RP2040 core): the USB serial's connected(), the
  *   terminal flag its write() tests (DTR, cleared on a USB reset too).
  * - ATmega32U4 and SAMD native USB: DTR or RTS (line state > 0), the "port open" test of
@@ -69,6 +72,9 @@
     !defined(DISABLE_GENERIC_SERIALUSB)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_STM32_CDC
 #include <usbd_cdc_if.h>
+/* The core's USB device (usbd_cdc_if.c), whose state CDC_connected() reads; no header
+ * declares it. */
+extern "C" USBD_HandleTypeDef hUSBD_Device_CDC;
 #elif defined(ARDUINO_ARCH_MBED) && defined(SERIAL_CDC)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_MBED
 #include <USB/PluggableUSBSerial.h>
@@ -76,6 +82,9 @@
     !defined(NO_USB)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_TINYUSB
 #include <tusb.h>
+#if defined(ARDUINO_ARCH_RENESAS)
+#include <device/usbd_pvt.h> /* usbd_int_set(), as the core's own write() uses it */
+#endif
 #elif (defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_SAMD)) && defined(USBCON)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_LINE_STATE
 #else
@@ -119,6 +128,8 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
 static cli_transport_ret_t arduino_serial_flush(void *ctx);
 #endif
 static bool arduino_serial_host_present(void);
+static bool arduino_serial_host_too_slow(void);
+static size_t arduino_serial_write_room(size_t wanted);
 static void arduino_serial_check_host(void);
 
 /*=======================================================================================
@@ -195,22 +206,24 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
   if (s_host && !s_host_changed) {
     bool progress = true;
 
-    /* The rest of the buffer per call: the single-byte write() does not return 1 on every
-     * core (mbed returns the byte's value). A count above what was asked for is a failure
-     * (SAMD returns (size_t)-1). */
+    /* The rest of the buffer per call (as much as the port takes): the single-byte write()
+     * does not return 1 on every core (mbed returns the byte's value). A count above what
+     * was asked for is a failure (SAMD returns (size_t)-1). */
     while (written < len && progress) {
-      size_t sent = Serial.write(&buf[written], (size_t)(len - written));
+      size_t chunk = arduino_serial_write_room((size_t)(len - written));
+      size_t sent = (chunk > 0U) ? Serial.write(&buf[written], chunk) : 0U;
 
-      progress = (sent > 0U && sent <= (size_t)(len - written));
+      progress = (sent > 0U && sent <= chunk);
       if (progress) {
         written = (cli_transport_buflen_t)(written + sent);
       }
     }
     if (written < len) {
-      /* Native-USB ports refuse output once the terminal has gone: then it is dropped as
-       * above. Anything else is a write failure for the engine to handle. */
+      /* Native-USB ports refuse output once the terminal has gone, STM32duino's also to a
+       * host too slow to take it: then it is dropped as above. Anything else is a write
+       * failure for the engine to handle. */
       arduino_serial_check_host();
-      if (s_host && !s_host_changed) {
+      if (s_host && !s_host_changed && !arduino_serial_host_too_slow()) {
         result = (cli_transport_ret_t)written;
       }
     }
@@ -252,7 +265,7 @@ static bool arduino_serial_host_present(void) {
 #elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_MBED
   bool host = _SerialUSB.connected(); /* the USB serial behind Serial */
 #elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_STM32_CDC
-  bool host = CDC_connected();
+  bool host = (hUSBD_Device_CDC.dev_state == USBD_STATE_CONFIGURED) && Serial.dtr();
 #elif CLI_SERIAL_HOST == CLI_SERIAL_HOST_LINE_STATE
   bool host = arduino_serial_port_open(Serial);
 #else
@@ -261,6 +274,47 @@ static bool arduino_serial_host_present(void) {
 
   return host;
 }
+
+/* Whether the port refuses output because the host has not taken what was sent (the
+ * terminal holds the port all the same; see CLI_SERIAL_HOST). */
+static bool arduino_serial_host_too_slow(void) {
+#if CLI_SERIAL_HOST == CLI_SERIAL_HOST_STM32_CDC
+  bool too_slow = !CDC_connected();
+#else
+  bool too_slow = false;
+#endif
+
+  return too_slow;
+}
+
+#if defined(ARDUINO_ARCH_RENESAS) && (CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB)
+/* How much of @p wanted bytes to hand to write() at once. The UNO R4 core's write() waits
+ * for room without end, also after the terminal has closed the port (TinyUSB then keeps
+ * the unsent output): room is waited for here instead, only while a terminal holds the
+ * port. 0 once it has gone. */
+static size_t arduino_serial_write_room(size_t wanted) {
+  size_t room = 0U;
+  bool open = true;
+
+  while (room == 0U && open) {
+    room = (size_t)Serial.availableForWrite();
+    if (room == 0U) {
+      open = tud_cdc_connected();
+      if (open) {
+        tud_cdc_write_flush(); /* send what is queued; the USB interrupt takes it out */
+      }
+    }
+  }
+
+  return (room < wanted) ? room : wanted;
+}
+#else
+/* How much of @p wanted bytes to hand to write() at once: all of them (write() waits for
+ * room, or stops once the terminal has gone). */
+static size_t arduino_serial_write_room(size_t wanted) {
+  return wanted;
+}
+#endif
 
 #if defined(ARDUINO_ARCH_RENESAS) && (CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB)
 /* The UNO R4 core's read() refuses input while no terminal holds the port, so
@@ -282,6 +336,18 @@ static void arduino_serial_check_host(void) {
   if (host != s_host) {
     s_host = host;
     s_host_changed = true;
+#if defined(ARDUINO_ARCH_RENESAS) && (CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB)
+    if (!host) {
+      /* The UNO R4 core keeps what the closed terminal left: input not read yet (its read()
+       * refuses it while no terminal holds the port) and output not sent yet (TinyUSB keeps
+       * it when DTR drops). Both are dropped, not handed to the next terminal. The USB
+       * interrupt, which fills and empties these FIFOs, is held off meanwhile. */
+      usbd_int_set(false);
+      tud_cdc_read_flush();
+      (void)tud_cdc_write_clear();
+      usbd_int_set(true);
+    }
+#endif
   }
 }
 #endif

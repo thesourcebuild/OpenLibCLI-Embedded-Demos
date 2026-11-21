@@ -1051,8 +1051,8 @@ OPENLIBCLI_API void cli_set_ansi_supported(cli_struct_t *cli, bool enabled);
  * edited correctly in the buffer, but cursor motion on screen assumes a single row.
  *
  * The width is found by itself on most terminals: when the session starts and on
- * Ctrl+L (redraw), an ANSI terminal is asked for it (a cursor position report), and its
- * reply sets it. A Telnet server learns it from the client's window size (NAWS) and
+ * Ctrl+L (redraw) at the command prompt, an ANSI terminal is asked for it (a cursor
+ * position report), and its reply sets it. A Telnet server learns it from the client's window size (NAWS) and
  * passes it here whenever it changes. A width set here leaves a pending query waiting:
  * its reply is still the terminal's answer, not a key, and the terminal sends both in
  * order, so the one that arrives last is the newer width.

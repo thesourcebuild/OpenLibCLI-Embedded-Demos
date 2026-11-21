@@ -125,6 +125,7 @@ static void cli_telnet_respond(cli_telnet_ctx_struct_t *ctx, uint8_t verb, uint8
 static bool cli_telnet_process_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte, uint8_t *out);
 static void cli_telnet_sb_byte(cli_telnet_ctx_struct_t *ctx, uint8_t byte);
 static void cli_telnet_sb_end(cli_telnet_ctx_struct_t *ctx);
+static void cli_telnet_width_deliver(cli_telnet_ctx_struct_t *ctx);
 static cli_transport_ret_t cli_telnet_transport_available(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_read(void *raw_ctx);
 static cli_transport_ret_t cli_telnet_transport_write(void *raw_ctx, const uint8_t *buf, cli_transport_buflen_t len);
@@ -169,6 +170,8 @@ void cli_transport_telnet_set_client(cli_telnet_ctx_struct_t *ctx, int client_fd
     ctx->verb = 0;
     ctx->sb_len = 0;
     ctx->window_width = 0; /* the next client reports its own */
+    ctx->window_width_due = false;
+    ctx->window_width_at = 0;
     ctx->negotiated = false;
     ctx->local_echo = false;
     ctx->local_sga = false;
@@ -248,20 +251,24 @@ int8_t cli_telnet_handler(cli_telnet_ctx_struct_t *ctx)
   }
   else
   {
-    int n = recv(fd, ctx->rx_buf, (int)sizeof(ctx->rx_buf), MSG_DONTWAIT);
+    int n;
+
+    cli_telnet_width_deliver(ctx); /* the input before it has all been handled */
+    n = recv(fd, ctx->rx_buf, (int)sizeof(ctx->rx_buf), MSG_DONTWAIT);
     if (n > 0)
     {
-      uint16_t wp = 0;
-      for (int i = 0; i < n && wp < sizeof(ctx->rx_buf); i++)
+      /* Decoded in place: rx_len counts the decoded bytes so far (a window size records
+       * where it falls among them). */
+      ctx->rx_len = 0;
+      ctx->rx_pos = 0;
+      for (int i = 0; i < n && ctx->rx_len < sizeof(ctx->rx_buf); i++)
       {
         uint8_t out;
         if (cli_telnet_process_byte(ctx, ctx->rx_buf[i], &out))
         {
-          ctx->rx_buf[wp++] = out;
+          ctx->rx_buf[ctx->rx_len++] = out;
         }
       }
-      ctx->rx_len = wp;
-      ctx->rx_pos = 0;
       if (ctx->rx_pos < ctx->rx_len)
       {
         result = CLI_OK;
@@ -610,11 +617,25 @@ static void cli_telnet_sb_end(cli_telnet_ctx_struct_t *ctx)
 
     if (width > 0U)
     {
+      /* Passed on once the input received before it has been read (a width reply, say),
+       * so the session sees both in the order the client sent them. */
       ctx->window_width = width;
-      if (ctx->cli != NULL)
-      {
-        cli_set_terminal_width(ctx->cli, width);
-      }
+      ctx->window_width_due = true;
+      ctx->window_width_at = ctx->rx_len;
+    }
+  }
+}
+
+/* Pass a reported window width on to the session once the input received before it has
+ * been read: from available(), so the last byte read has also been handled. */
+static void cli_telnet_width_deliver(cli_telnet_ctx_struct_t *ctx)
+{
+  if (ctx->window_width_due && ctx->rx_pos >= ctx->window_width_at)
+  {
+    ctx->window_width_due = false;
+    if (ctx->cli != NULL)
+    {
+      cli_set_terminal_width(ctx->cli, ctx->window_width);
     }
   }
 }
@@ -646,12 +667,14 @@ static cli_transport_ret_t cli_telnet_transport_available(void *raw_ctx)
 
   if (ctx)
   {
+    cli_telnet_width_deliver(ctx);
     if (ctx->rx_pos < ctx->rx_len)
     {
       result = 1;
     }
     else if (cli_telnet_handler(ctx) == CLI_OK)
     {
+      cli_telnet_width_deliver(ctx); /* one at the start of the new input */
       result = (ctx->rx_pos < ctx->rx_len) ? 1 : 0;
     }
     else
@@ -694,6 +717,7 @@ static cli_transport_ret_t cli_telnet_transport_read(void *raw_ctx)
       {
         ctx->rx_pos = 0;
         ctx->rx_len = 0;
+        ctx->window_width_at = 0; /* the input before a waiting width has all been read */
       }
     }
   }

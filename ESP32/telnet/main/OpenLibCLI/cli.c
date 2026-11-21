@@ -327,6 +327,7 @@ static void cli_cursor_settle(cli_struct_t *cli, cli_len_t pos);
 static size_t cli_text_escape_len(const char *s);
 static cli_len_t cli_text_columns(const char *s);
 static void cli_term_width_query(cli_struct_t *cli);
+static bool cli_term_width_reply_open(const cli_struct_t *cli);
 #if CLI_ENABLE_TIME_SOURCE
 static void cli_term_width_query_expire(cli_struct_t *cli);
 #endif
@@ -3288,18 +3289,33 @@ static void cli_term_width_query(cli_struct_t *cli) {
   }
 }
 
+/**
+ * @brief Test whether the terminal's width reply is being received: a query is pending and
+ *        the escape parser is inside a CSI sequence (its rest may come in a later tick).
+ *
+ * @param[in] cli  Active CLI session.
+ *
+ * @return @c true while the reply may be in progress.
+ */
+static bool cli_term_width_reply_open(const cli_struct_t *cli) {
+  return cli->term_width_query &&
+         (cli->esc_state == ESC_STATE_ESC || cli->esc_state == ESC_STATE_CSI ||
+          cli->esc_state == ESC_STATE_CSI_PARAM || cli->esc_state == ESC_STATE_CSI_REST);
+}
+
 #if CLI_ENABLE_TIME_SOURCE
 /**
  * @brief Give up a width query the terminal has not answered in time.
  *
  * A terminal answers at once; one that has not after @c CLI_TERM_WIDTH_QUERY_TIMEOUT_SEC
  * does not support the query. Waiting on would take a key that sends the same bytes as the
- * reply (a modified F3, <tt>ESC [ 1 ; 5 R</tt>) for it.
+ * reply (a modified F3, <tt>ESC [ 1 ; 5 R</tt>) for it. A reply already being received
+ * (@c cli_term_width_reply_open()) is let finish: its last bytes are not a key.
  *
  * @param[in] cli  Active CLI session (a query is pending).
  */
 static void cli_term_width_query_expire(cli_struct_t *cli) {
-  if (cli->time_source != NULL) {
+  if (cli->time_source != NULL && !cli_term_width_reply_open(cli)) {
     uint32_t now = cli->time_source(cli->time_source_ctx);
 
     if ((uint32_t)(now - cli->term_width_query_ts) >= (uint32_t)CLI_TERM_WIDTH_QUERY_TIMEOUT_SEC) {
@@ -5987,9 +6003,7 @@ static void cli_auth_lockout_end(cli_struct_t *cli) {
   bool reply_open = False; /* the terminal's width reply is being received */
 
 #if CLI_ENABLE_LINE_WRAP
-  reply_open = cli->term_width_query &&
-               (cli->esc_state == ESC_STATE_ESC || cli->esc_state == ESC_STATE_CSI ||
-                cli->esc_state == ESC_STATE_CSI_PARAM || cli->esc_state == ESC_STATE_CSI_REST);
+  reply_open = cli_term_width_reply_open(cli);
 #endif
   if (!reply_open) {
     /* A sequence still open (a lone Esc) was typed during the lockout: it is discarded

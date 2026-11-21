@@ -611,8 +611,6 @@
 		"-D",
 		"__MULTIPLE_INHERITANCE__=1",
 		"-D",
-		"__FOR_DEBUG__=",
-		"-D",
 		"__AAPCS__=1",
 		"-D",
 		"__ARM4TM__=4",

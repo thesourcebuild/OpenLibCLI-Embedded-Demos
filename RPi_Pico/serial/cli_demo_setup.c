@@ -209,7 +209,10 @@ static bool cli_led_init(void)
       /* No chip answered. cyw43_arch_deinit() does not undo a start that failed: the bus
        * it set up is released here, its PIO program and DMA channels (cyw43_ll_deinit())
        * and its pins. On a plain Pico those are the LED (GP25), the SMPS mode pin (GP23)
-       * and the VSYS sense input (GP29), which the bus left driven or taken over. */
+       * and the VSYS sense input (GP29), which the bus left driven or taken over. Their
+       * pads go back to the reset state too: the bus pulled GP23 up (a plain Pico's
+       * regulator then leaves its power-saving mode) and made the clock pad strong and
+       * fast. */
       cyw43_thread_enter();
       cyw43_ll_deinit(&cyw43_state.cyw43_ll);
       cyw43_thread_exit();
@@ -217,6 +220,9 @@ static bool cli_led_init(void)
       gpio_deinit(CYW43_PIN_WL_DATA_OUT); /* also DATA_IN and HOST_WAKE on these boards */
       gpio_deinit(CYW43_PIN_WL_CS);
       gpio_deinit(CYW43_PIN_WL_CLOCK);
+      gpio_set_pulls(CYW43_PIN_WL_REG_ON, false, true); /* reset state: pull-down */
+      gpio_set_drive_strength(CYW43_PIN_WL_CLOCK, GPIO_DRIVE_STRENGTH_4MA);
+      gpio_set_slew_rate(CYW43_PIN_WL_CLOCK, GPIO_SLEW_RATE_SLOW);
       cyw43_arch_deinit();
     }
   }

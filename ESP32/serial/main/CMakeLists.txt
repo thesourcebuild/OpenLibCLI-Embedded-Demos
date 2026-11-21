@@ -8,3 +8,6 @@ idf_component_register(SRCS "main.c"
                             "OpenLibCLI/config"
                             "OpenLibCLI/utils"
                     REQUIRES esp_driver_uart esp_driver_usb_serial_jtag vfs esp_driver_gpio esp_timer)
+
+# Nothing in this demo shows the engine's tick timing (cli_tick_stats_get()): left out.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE CLI_ENABLE_TIMMING_STATS=0)

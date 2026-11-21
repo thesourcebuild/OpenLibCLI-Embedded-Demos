@@ -68,9 +68,11 @@
 #endif
 
 /** @brief LED the led command drives: the board's LED_BUILTIN, or a fallback pin. */
-#if (defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)) && defined(LED_BUILTIN)
-  #define LED_PIN LED_BUILTIN // the board's LED (PA5 on a Nucleo F103RB, PC13 on a Blue Pill)
-#elif defined(STM32) || defined(STM32F1) || defined(ARDUINO_ARCH_STM32)
+#if defined(ARDUINO_ARCH_STM32)
+  /* STM32duino defines LED_BUILTIN for every board: an unconnected pin (PNUM_NOT_DEFINED)
+   * on a generic one, which then gets PA5 (the Nucleo-64 LED). */
+  #define LED_PIN ((LED_BUILTIN != PNUM_NOT_DEFINED) ? LED_BUILTIN : PA5)
+#elif defined(STM32) || defined(STM32F1)
   #define LED_PIN PA5   // STM32 Nucleo F103RB: LED on GPIOA pin 5
 #elif (defined(ESP32) || defined(ARDUINO_ARCH_ESP32)) && defined(LED_BUILTIN)
   #define LED_PIN LED_BUILTIN // the board's LED; digitalWrite() also drives an RGB one (S3/C3/C6 DevKits)
@@ -81,6 +83,20 @@
   #define LED_BUILTIN 13
   #endif
   #define LED_PIN LED_BUILTIN
+#endif
+
+/** @brief Pin levels that light and clear the LED. The Blue Pill and Black Pill boards wire
+ * it from 3.3 V to the pin: a low pin lights it. */
+#if defined(ARDUINO_BLUEPILL_F103C6) || defined(ARDUINO_BLUEPILL_F103C8) ||                   \
+    defined(ARDUINO_BLUEPILL_F103CB) || defined(ARDUINO_BLACKPILL_F103C8) ||                   \
+    defined(ARDUINO_BLACKPILL_F103CB) || defined(ARDUINO_BLACKPILL_F303CC) ||                  \
+    defined(ARDUINO_BLACKPILL_F401CC) || defined(ARDUINO_BLACKPILL_F401CE) ||                  \
+    defined(ARDUINO_BLACKPILL_F411CE) || defined(ARDUINO_BLACKPILL_F411CE_8M)
+  #define LED_LEVEL_ON  LOW
+  #define LED_LEVEL_OFF HIGH
+#else
+  #define LED_LEVEL_ON  HIGH
+  #define LED_LEVEL_OFF LOW
 #endif
 
 /** @brief Serial line speed used by the Arduino demo. */
@@ -160,6 +176,7 @@ static bool parse_operand(const char *s, int32_t *out);
 void setup(void) {
   Serial.begin(CLI_BAUD_RATE);
   pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LED_LEVEL_OFF);
 
   uint32_t t0 = (uint32_t)millis();
   while (!Serial && (millis() - t0) < USB_WAIT_MS) {
@@ -219,10 +236,10 @@ static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
     cli_println(cli, "Usage: led <on|off>");
     rc = CLI_ERR;
   } else if (strcmp(argv[1], "on") == 0) {
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, LED_LEVEL_ON);
     cli_println(cli, "LED turned on");
   } else if (strcmp(argv[1], "off") == 0) {
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_PIN, LED_LEVEL_OFF);
     cli_println(cli, "LED turned off");
   } else {
     cli_println(cli, "Invalid state. Use 'on' or 'off'");
