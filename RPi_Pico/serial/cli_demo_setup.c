@@ -189,12 +189,25 @@ static bool cli_led_init(void)
   bool ready = false;
 
 #if defined(CLI_HAS_CYW43)
-  /* Fails where the WiFi chip that drives the LED is missing (a plain Pico running a
-   * pico_w build): the LED is then left alone. */
+  /* The LED hangs off the WiFi chip, which cyw43_arch_init() does not start: its first use
+   * does, and fails where the chip is missing (a plain Pico running a pico_w build). That
+   * first use is made here, with the result cyw43_arch_gpio_put() would discard; on failure
+   * the LED is left alone. */
   if (cyw43_arch_init() == 0)
   {
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
-    ready = true;
+    int led_rc;
+
+    cyw43_thread_enter();
+    led_rc = cyw43_gpio_set(&cyw43_state, CYW43_WL_GPIO_LED_PIN, false);
+    cyw43_thread_exit();
+    if (led_rc == 0)
+    {
+      ready = true;
+    }
+    else
+    {
+      cyw43_arch_deinit();
+    }
   }
 #elif defined(PICO_DEFAULT_LED_PIN)
   gpio_init(PICO_DEFAULT_LED_PIN);

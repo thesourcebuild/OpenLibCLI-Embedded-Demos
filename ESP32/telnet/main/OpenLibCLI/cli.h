@@ -54,7 +54,7 @@
  * Define @c CLI_MAX_COMMANDS in your application to set the command-pool size.  This macro is no
  * longer provided by the library each application chooses its own pool dimension.
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */
@@ -705,11 +705,11 @@ struct cli_s {
   cli_cmd_handle_t context; /**< Current submenu context handle, or @c CLI_CMD_ROOT. */
   cli_nav_frame_struct_t nav_stack[CLI_MAX_CONTEXT_DEPTH]; /**< Saved mode/context levels;
                                                               empty at the login floor. */
-  uint8_t nav_depth; /**< Number of valid entries in @c nav_stack[]. */
-  uint8_t nav_floor[CLI_MAX_EXEC_DEPTH]; /**< For each running command, by nesting level
-                                            (@c exec_depth - 1): the lowest @c nav_depth
-                                            it reached (it may return to an enclosing
-                                            level through @c cli_set_mode()). */
+  uint8_t nav_depth;                             /**< Number of valid entries in @c nav_stack[]. */
+  uint8_t nav_floor[CLI_MAX_EXEC_DEPTH];         /**< For each running command, by nesting level
+                                                    (@c exec_depth - 1): the lowest @c nav_depth
+                                                    it reached (it may return to an enclosing
+                                                    level through @c cli_set_mode()). */
   cli_priv_t nav_floor_priv[CLI_MAX_EXEC_DEPTH]; /**< Privilege in effect at each
                                                     @c nav_floor when it was reached:
                                                     what leaving a submenu that command
@@ -736,11 +736,14 @@ struct cli_s {
   cli_len_t input_len;           /**< Number of valid characters in @c input[]. */
   cli_len_t cursor;              /**< Current cursor position within @c input[]. */
 #if CLI_ENABLE_LINE_WRAP
-  cli_len_t prompt_len;          /**< Columns of the prompt shown before the input. */
-  uint16_t term_width;           /**< Terminal width in columns, 0 when unknown: cursor motion
-                                      then ignores line wrapping (@c cli_set_terminal_width()). */
-  bool term_width_query;         /**< The terminal was asked for its width (cursor position
-                                      report) and the reply has not arrived yet. */
+  cli_len_t prompt_len;  /**< Columns of the prompt shown before the input. */
+  uint16_t term_width;   /**< Terminal width in columns, 0 when unknown: cursor motion
+                              then ignores line wrapping (@c cli_set_terminal_width()). */
+  bool term_width_query; /**< The terminal was asked for its width (cursor position
+                              report) and the reply has not arrived yet. */
+#if CLI_ENABLE_TIME_SOURCE
+  cli_time_t term_width_query_ts; /**< When the pending width query was sent. */
+#endif
 #endif
 
   /* --- session state
@@ -774,26 +777,26 @@ struct cli_s {
   cli_auth_state_enum_t auth_state;
   char users[CLI_MAX_USERS][CLI_MAX_USERNAME_LEN];     /**< Local user table usernames. */
   char passwords[CLI_MAX_USERS][CLI_MAX_PASSWORD_LEN]; /**< Local user table passwords. */
-  char auth_username[CLI_MAX_USERNAME_LEN + 1]; /**< Username captured before password entry;
-                                                     one byte longer than a valid username, so
-                                                     a name typed too long never matches. */
-  cli_priv_t user_privileges[CLI_MAX_USERS]; /**< Privilege level per local user. */
-  cli_len_t num_users;     /**< Number of entries currently in the local user table. */
+  char auth_username[CLI_MAX_USERNAME_LEN + 1];        /**< Username captured before password entry;
+                                                            one byte longer than a valid username, so
+                                                            a name typed too long never matches. */
+  cli_priv_t user_privileges[CLI_MAX_USERS];           /**< Privilege level per local user. */
+  cli_len_t num_users;       /**< Number of entries currently in the local user table. */
   cli_len_t auth_attempts;   /**< Number of failed login attempts in this auth cycle. */
   cli_len_t enable_attempts; /**< Number of consecutive failed enable-secret attempts. */
   cli_auth_failure_mode_enum_t auth_failure_mode; /**< What to do when max attempts are exceeded. */
-  cli_time_t auth_lockout_seconds;    /**< Lockout duration in seconds (0 = immediate). */
-  cli_time_t auth_lockout_started_ts; /**< Timestamp when the current lockout began. */
+  cli_time_t auth_lockout_seconds;         /**< Lockout duration in seconds (0 = immediate). */
+  cli_time_t auth_lockout_started_ts;      /**< Timestamp when the current lockout began. */
   cli_auth_state_enum_t auth_resume_state; /**< State restored after the enable prompt or a
                                               lockout; @c CLI_AUTH_USERNAME means re-login. */
-  bool auth_requested; /**< @c cli_request_auth() during a (re)start: the session begins at
-                            the login prompt even without @c require_auth. */
-  bool auth_line_pending; /**< A username / password / secret line was entered and is being
-                               handled: no prompt is on screen; the prompt for what is asked
-                               next is shown once, when the line is done. */
-  bool require_auth;                  /**< True when the session requires login before running
-                                         commands. */
-  cli_auth_fn authorization_cb;       /**< Custom auth callback; overrides the local user table. */
+  bool auth_requested;          /**< @c cli_request_auth() during a (re)start: the session begins at
+                                     the login prompt even without @c require_auth. */
+  bool auth_line_pending;       /**< A username / password / secret line was entered and is being
+                                     handled: no prompt is on screen; the prompt for what is asked
+                                     next is shown once, when the line is done. */
+  bool require_auth;            /**< True when the session requires login before running
+                                   commands. */
+  cli_auth_fn authorization_cb; /**< Custom auth callback; overrides the local user table. */
 
   /* --- cisco like enable mode
    * ------------------------------------------------------ */
@@ -871,7 +874,7 @@ struct cli_s {
 
   /* --- command execution
    * ------------------------------------------------------ */
-  uint8_t exec_depth; /**< Commands currently executing (> 1 = nested @c cli_exec()). */
+  uint8_t exec_depth;  /**< Commands currently executing (> 1 = nested @c cli_exec()). */
   cli_len_t exec_used; /**< While a command runs: bytes of @c input[] holding the executing
                           lines; @c cli_exec() places its line after them. */
   bool out_open;       /**< Command output so far did not end with a newline. */
@@ -890,8 +893,8 @@ struct cli_s {
   int esc_param_last; /**< Last CSI numeric parameter (saturated): the column of a cursor
                            position report. */
 #endif
-  uint8_t eol_prev;  /**< Line-ending byte (CR or LF) that just submitted a line, else 0; the
-                        complementary byte of a CR LF / LF CR pair is then swallowed. */
+  uint8_t eol_prev; /**< Line-ending byte (CR or LF) that just submitted a line, else 0; the
+                       complementary byte of a CR LF / LF CR pair is then swallowed. */
 
   bool ansi_supported; /**< Terminal supports ANSI/VT100 escape sequences (default true). */
   bool tx_error;       /**< A transport write failed; the session ends on the next tick. */

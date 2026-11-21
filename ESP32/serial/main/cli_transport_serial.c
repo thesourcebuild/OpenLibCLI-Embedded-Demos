@@ -20,6 +20,11 @@
  * terminal, or the cable is unplugged). As with the console's own output on this port,
  * once output is dropped the next writes do not wait until one is queued again. */
 #define CLI_USJ_TX_WAIT_MS 50
+/* Output is queued at most one USB packet (64 bytes) at a time: the driver queues a write
+ * whole or not at all, and a driver installed by other code may have a TX buffer smaller
+ * than this transport's own (it needs at least one packet). The port sends one packet at
+ * a time anyway. */
+#define CLI_USJ_TX_CHUNK 64U
 #else
 #error "The CLI needs the console on a UART or on the USB-Serial/JTAG port: set menuconfig \"ESP-STDIO\" -> \"Channel for console output\" (USB CDC and None are not supported)."
 #endif
@@ -102,14 +107,14 @@ static cli_transport_ret_t esp_serial_write(void *ctx, const uint8_t *buf, cli_t
     cli_transport_buflen_t sent = 0;
     bool queued = true;
 
-    /* The driver queues a write whole or not at all: at most its buffer's size at a time. */
+    /* A packet at a time (CLI_USJ_TX_CHUNK). */
     while (sent < len && queued)
     {
       size_t chunk = (size_t)(len - sent);
 
-      if (chunk > CLI_SERIAL_BUF_SIZE)
+      if (chunk > CLI_USJ_TX_CHUNK)
       {
-        chunk = CLI_SERIAL_BUF_SIZE;
+        chunk = CLI_USJ_TX_CHUNK;
       }
       queued = (usb_serial_jtag_write_bytes(&buf[sent], chunk, wait) > 0);
       if (queued)

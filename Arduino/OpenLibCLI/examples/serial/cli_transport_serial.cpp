@@ -38,6 +38,8 @@
  *   Not the UNO R4 SerialUSB.dtr(): it also turns off that core's own check for good.
  * - Adafruit TinyUSB library: Serial.dtr(), the tud_cdc_n_connected() of Serial's own CDC
  *   interface that its write() tests.
+ * - STM32duino with Serial on USB ("USB support: CDC (generic 'Serial' supersede U(S)ART)"):
+ *   Serial.dtr(), the DTR state its write() tests (CDC_connected()).
  * - Arduino mbed cores (e.g. the mbed RP2040 core): the USB serial's connected(), the
  *   terminal flag its write() tests (DTR, cleared on a USB reset too).
  * - ATmega32U4 and SAMD native USB: DTR or RTS (line state > 0), the "port open" test of
@@ -57,6 +59,9 @@
 #elif defined(ARDUINO_ARCH_ESP32)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_ALWAYS
 #elif defined(USE_TINYUSB)
+#define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT_DTR
+#elif defined(ARDUINO_ARCH_STM32) && defined(USBCON) && defined(USBD_USE_CDC) && \
+    !defined(DISABLE_GENERIC_SERIALUSB)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_PORT_DTR
 #elif defined(ARDUINO_ARCH_MBED) && defined(SERIAL_CDC)
 #define CLI_SERIAL_HOST CLI_SERIAL_HOST_MBED
@@ -176,8 +181,18 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
    * the session. */
   arduino_serial_check_host();
   if (s_host && !s_host_changed) {
-    while (written < len && Serial.write(buf[written]) == 1) {
-      written++;
+    bool progress = true;
+
+    /* The rest of the buffer per call: the single-byte write() does not return 1 on every
+     * core (mbed returns the byte's value). A count above what was asked for is a failure
+     * (SAMD returns (size_t)-1). */
+    while (written < len && progress) {
+      size_t sent = Serial.write(&buf[written], (size_t)(len - written));
+
+      progress = (sent > 0U && sent <= (size_t)(len - written));
+      if (progress) {
+        written = (cli_transport_buflen_t)(written + sent);
+      }
     }
     if (written < len) {
       /* Native-USB ports refuse output once the terminal has gone: then it is dropped as

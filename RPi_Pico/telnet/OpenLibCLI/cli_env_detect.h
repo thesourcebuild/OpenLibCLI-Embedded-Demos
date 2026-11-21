@@ -23,7 +23,7 @@
  * @note @c ENV_HAS_* are **output** macros defined by this header — do not
  *       define them yourself.  Use @c ENV_FORCE_* to override detection.
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */

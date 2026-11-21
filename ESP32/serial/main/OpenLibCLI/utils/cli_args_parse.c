@@ -9,7 +9,7 @@
  *   - integer and hex formatters (format_*) — no sprintf dependency
  *
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */
@@ -560,9 +560,8 @@ int format_i32(char *buf, int size, int32_t val) {
 
   if (val < 0) {
     /* Format the magnitude after the sign; it only succeeds if sign + digits + NUL fit. */
-    int digits = (buf != NULL && size >= 2)
-                     ? format_u32(&buf[1], size - 1, (uint32_t)(-(val + 1)) + 1U)
-                     : 0;
+    int digits =
+        (buf != NULL && size >= 2) ? format_u32(&buf[1], size - 1, (uint32_t)(-(val + 1)) + 1U) : 0;
     result = put_minus(buf, size, digits);
   } else {
     result = format_u32(buf, size, (uint32_t)val);

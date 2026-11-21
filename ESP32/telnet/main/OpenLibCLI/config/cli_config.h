@@ -18,7 +18,7 @@
  *             BANNER 1, AUTH 1, MODE_NAMES 1, PIPE_FILTER 1, IDLE_TIMEOUT 1,
  *             PERIODIC_CALLBACK 1, TIMMING_STATS 1, ALIASES 1
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */

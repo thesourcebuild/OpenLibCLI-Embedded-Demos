@@ -13,7 +13,7 @@
  * All macros are guarded with @c #ifndef so any value can be overridden on
  * the compiler command line.
  *
- * @copyright Copyright (c) 2026 Muhammad Hassaan Shah.
+ * @copyright Copyright (c) 2026 thesourcebuild and Muhammad Hassaan Shah
  *
  * SPDX-License-Identifier: MIT
  */
@@ -152,7 +152,8 @@ extern "C" {
 #define CLI_MAX_OUTPUT_BUF 48 /**< AVR: per-line output buffer (bytes). */
 #endif
 #ifndef CLI_ENABLE_PRINT_TRANSPORT_CB
-#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves the buffer). */
+#define CLI_ENABLE_PRINT_TRANSPORT_CB 0 /**< AVR: no per-line output callback (saves the buffer).  \
+                                         */
 #endif
 
 /*-----------------------------------------------------------------------------
