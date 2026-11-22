@@ -31,7 +31,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__WINDOWS__) || defined(WIN32)
+#include "cli_env_detect.h"
+
+/* The default time source's clock (cli_default_time_source()). */
+#if ENV_IS_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -40,9 +43,6 @@
 #include <time.h>
 #endif
 
-#include <time.h>
-
-#include "cli_env_detect.h"
 #include "cli.h"
 #include "utils/cli_args_parse.h"
 
