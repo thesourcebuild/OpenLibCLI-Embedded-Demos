@@ -85,9 +85,10 @@
   #define LED_PIN LED_BUILTIN
 #endif
 
-/** @brief Pin levels that light and clear the LED. The Blue Pill and Black Pill boards wire
- * it from 3.3 V to the pin: a low pin lights it. */
-#if defined(ARDUINO_BLUEPILL_F103C6) || defined(ARDUINO_BLUEPILL_F103C8) ||                   \
+/** @brief Pin levels that light and clear the LED. The Blue Pill and Black Pill boards and the
+ * ESP8266 modules (GPIO2) wire it from 3.3 V to the pin: a low pin lights it. */
+#if defined(ARDUINO_ARCH_ESP8266) ||                                                          \
+    defined(ARDUINO_BLUEPILL_F103C6) || defined(ARDUINO_BLUEPILL_F103C8) ||                   \
     defined(ARDUINO_BLUEPILL_F103CB) || defined(ARDUINO_BLACKPILL_F103C8) ||                   \
     defined(ARDUINO_BLACKPILL_F103CB) || defined(ARDUINO_BLACKPILL_F303CC) ||                  \
     defined(ARDUINO_BLACKPILL_F401CC) || defined(ARDUINO_BLACKPILL_F401CE) ||                  \

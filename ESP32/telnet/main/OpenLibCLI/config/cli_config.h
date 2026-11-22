@@ -202,8 +202,9 @@ extern "C" {
  *=======================================================================================*/
 
 #ifndef CLI_TRANSPORT_POLL_MS
-/** Transport poll interval in milliseconds used as the blocking read timeout for WIN/POSIX socket
- *  transports; not applicable to Arduino. Arduino Client (and WiFiClient) uses available(). */
+/** Longest wait for input, in milliseconds, between engine calls in the WIN/POSIX example
+ *  servers' session loops (cli_telnet_wait(), cli_tcp_wait(), ...); their transports' reads do
+ *  not wait. Not applicable to Arduino: Client (and WiFiClient) uses available(). */
 #define CLI_TRANSPORT_POLL_MS 1000
 #endif
 

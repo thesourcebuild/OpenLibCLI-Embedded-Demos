@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
-#include <math.h>
+#include <float.h>
 
 #include "cli_args_parse.h"
 
@@ -87,26 +87,27 @@ bool parse_u64(const char *s, uint64_t *out) {
 }
 
 bool parse_i64(const char *s, int64_t *out) {
-  uint64_t mag = 0ULL;
-  bool ok = (s != NULL && out != NULL);
-  bool neg = false;
+  bool ok = false;
 
-  if (ok) {
-    neg = (*s == '-');
+  if (s != NULL && out != NULL) {
+    uint64_t mag = 0ULL;
+    bool neg = (*s == '-');
+
     if (neg || *s == '+') {
       s++;
     }
     ok = parse_dec_u64(s, neg ? ((uint64_t)INT64_MAX + 1ULL) : (uint64_t)INT64_MAX, &mag);
-  }
 
-  if (ok) {
-    if (!neg) {
-      *out = (int64_t)mag;
-    } else if (mag == 0ULL) {
-      *out = 0;
-    } else {
-      /* -(mag - 1) - 1 reaches INT64_MIN without negating it. */
-      *out = -(int64_t)(mag - 1ULL) - 1;
+    if (ok) {
+      if (!neg) {
+        *out = (int64_t)mag;
+      } else if (mag == 0ULL) {
+        *out = 0;
+      } else {
+        /* -(mag - 1) - 1 reaches INT64_MIN without negating it. */
+        uint64_t below = mag - 1ULL;
+        *out = -(int64_t)below - 1;
+      }
     }
   }
 
@@ -157,7 +158,7 @@ bool parse_hex_u32(const char *s, uint32_t *out) {
 
   if (ok) {
     ok = parse_hex_u64(s, &tmp);
-    ok = (ok && tmp <= 0xFFFFFFFFULL);
+    ok = (ok && tmp <= (uint64_t)UINT32_MAX);
   }
 
   if (out != NULL && ok) {
@@ -212,30 +213,31 @@ bool parse_i8(const char *s, int8_t *out) {
 }
 
 bool parse_f64(const char *s, double *out) {
-  char *end = NULL;
-  double val = 0.0;
-  bool ok = (s != NULL && out != NULL && is_decimal_float_text(s));
+  bool ok = false;
 
-  if (ok) {
+  if (s != NULL && out != NULL && is_decimal_float_text(s)) {
+    char *end = NULL;
     /* The text is plain decimal, so strtod() reads all of it and rounds correctly. Overflow
      * returns +-HUGE_VAL; underflow returns 0 or a subnormal value and is accepted. */
-    val = strtod(s, &end);
-    ok = (*end == '\0' && isfinite(val));
-  }
+    double val = strtod(s, &end);
 
-  if (ok) {
-    *out = val;
+    /* Finite: within +-DBL_MAX (an infinity lies beyond it; NaN fails both comparisons). */
+    ok = (*end == '\0' && val >= -DBL_MAX && val <= DBL_MAX);
+    if (ok) {
+      *out = val;
+    }
   }
 
   return ok;
 }
 
 bool parse_f32(const char *s, float *out) {
-  char *end = NULL;
-  float val = 0.0F;
-  bool ok = (s != NULL && out != NULL && is_decimal_float_text(s));
+  bool ok = false;
 
-  if (ok) {
+  if (s != NULL && out != NULL && is_decimal_float_text(s)) {
+    char *end = NULL;
+    float val;
+
     /* Converted to float directly: going through double first would round twice. */
 #if defined(__AVR__) && (__SIZEOF_DOUBLE__ == __SIZEOF_FLOAT__)
     /* avr-libc has no strtof(); with a 32-bit double, strtod() is the float parser. */
@@ -243,11 +245,10 @@ bool parse_f32(const char *s, float *out) {
 #else
     val = strtof(s, &end);
 #endif
-    ok = (*end == '\0' && isfinite(val));
-  }
-
-  if (ok) {
-    *out = val;
+    ok = (*end == '\0' && val >= -FLT_MAX && val <= FLT_MAX); /* finite (see parse_f64()) */
+    if (ok) {
+      *out = val;
+    }
   }
 
   return ok;
@@ -448,7 +449,7 @@ bool strtol_parse_float(const char *s, float *out) {
     /* Overflow returns ±HUGE_VALF and "inf" / "nan" are parsed as such: none of them is a
      * usable argument. Underflow yields 0 or a subnormal value and succeeds, like
      * parse_f32(). */
-    ok = (end != s && *end == '\0' && isfinite(val));
+    ok = (end != s && *end == '\0' && val >= -FLT_MAX && val <= FLT_MAX);
   }
 
   if (out != NULL && ok) {
@@ -470,7 +471,7 @@ bool strtol_parse_double(const char *s, double *out) {
   if (s != NULL && ok) {
     val = strtod(s, &end);
     /* Overflow (±HUGE_VAL), "inf" and "nan" fail; underflow succeeds, like parse_f64(). */
-    ok = (end != s && *end == '\0' && isfinite(val));
+    ok = (end != s && *end == '\0' && val >= -DBL_MAX && val <= DBL_MAX);
   }
 
   if (out != NULL && ok) {
@@ -518,7 +519,7 @@ int format_hex64(char *buf, int size, uint64_t val) {
   int digits = 1;
   int result = 0;
 
-  while (digits < 16 && (val >> (unsigned)(digits * 4)) != 0ULL) {
+  while (digits < 16 && (val >> ((unsigned)digits * 4U)) != 0ULL) {
     digits++;
   }
 
@@ -527,7 +528,8 @@ int format_hex64(char *buf, int size, uint64_t val) {
     buf[0] = '0';
     buf[1] = 'x';
     for (int i = 0; i < digits; i++) {
-      unsigned shift = (unsigned)((digits - 1 - i) * 4);
+      int nibble = digits - 1 - i; /* from the most significant one */
+      unsigned shift = (unsigned)nibble * 4U;
       buf[2 + i] = s_hex_digit[(val >> shift) & 0xFULL];
     }
     result = 2 + digits;
@@ -617,24 +619,27 @@ int format_hex8(char *buf, int size, uint8_t val) {
 
 int format_bytes(char *buf, int size, const uint8_t *data, uint16_t len) {
   int pos = 0;
-  /* No bytes are read without data, and nothing is written without buf. */
-  uint16_t count = (buf != NULL && data != NULL) ? len : 0U;
 
-  for (uint16_t i = 0; i < count; i++) {
-    /* Room for [' '] + 2 hex digits + NUL terminator. */
-    int needed = (i != 0U) ? 4 : 3;
-    if (pos + needed > size) {
-      break;
+  /* Nothing is written without buf, and no bytes are read without data. */
+  if (buf != NULL) {
+    if (data != NULL) {
+      for (uint16_t i = 0; i < len; i++) {
+        /* Room for [' '] + 2 hex digits + NUL terminator. */
+        int needed = (i != 0U) ? 4 : 3;
+        if (pos + needed > size) {
+          break;
+        }
+        if (i != 0U) {
+          buf[pos] = ' ';
+          pos++;
+        }
+        int r = format_hex8(&buf[pos], size - pos, data[i]);
+        pos += r;
+      }
     }
-    if (i != 0U) {
-      buf[pos] = ' ';
-      pos++;
+    if (pos < size) {
+      buf[pos] = '\0'; /* also an empty string when data is NULL */
     }
-    int r = format_hex8(&buf[pos], size - pos, data[i]);
-    pos += r;
-  }
-  if (buf != NULL && pos < size) {
-    buf[pos] = '\0'; /* also an empty string when data is NULL */
   }
   return pos;
 }
@@ -757,7 +762,8 @@ static bool parse_dec_i32(const char *s, int32_t min, int32_t max, int32_t *out)
       *out = 0;
     } else {
       /* -(mag - 1) - 1 reaches INT32_MIN without negating it. */
-      *out = -(int32_t)(mag - 1U) - 1;
+      uint32_t below = mag - 1U;
+      *out = -(int32_t)below - 1;
     }
   }
 
@@ -822,21 +828,24 @@ static int put_minus(char *buf, int size, int digits) {
  * @return @c true when the whole string matches.
  */
 static bool is_decimal_float_text(const char *s) {
-  bool digits = false;
+  const char *digits_start;
+  bool digits;
 
   if (*s == '-' || *s == '+') {
     s++;
   }
+  digits_start = s;
   while (is_dec_digit(*s)) {
-    digits = true;
     s++;
   }
+  digits = (s != digits_start);
   if (*s == '.') {
     s++;
+    digits_start = s;
     while (is_dec_digit(*s)) {
-      digits = true;
       s++;
     }
+    digits = digits || (s != digits_start);
   }
   if (digits && (*s == 'e' || *s == 'E')) {
     s++;

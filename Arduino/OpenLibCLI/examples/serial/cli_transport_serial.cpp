@@ -42,9 +42,8 @@
  *   interface that its write() tests.
  * - STM32duino with Serial on USB ("USB support: CDC (generic 'Serial' supersede U(S)ART)"):
  *   the device is configured (a pulled cable suspends it; DTR alone stays set) and DTR is
- *   set. That is the core's CDC_connected() without its "host too slow" term: its write()
- *   drops output the host has not taken within USB_CDC_TRANSMIT_TIMEOUT ms, and so does
- *   the transport, but a host that is slow to read is still the same terminal. Its
+ *   set. That is the core's CDC_connected() without its "host too slow" term: a host that
+ *   is slow to read is still the same terminal (arduino_serial_write()). Its
  *   Serial.flush() only waits, without a limit, for queued output the core sends by
  *   itself: the transport has no flush there.
  * - Arduino mbed cores (e.g. the mbed RP2040 core): the USB serial's connected(), the
@@ -128,7 +127,6 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
 static cli_transport_ret_t arduino_serial_flush(void *ctx);
 #endif
 static bool arduino_serial_host_present(void);
-static bool arduino_serial_host_too_slow(void);
 static size_t arduino_serial_write_room(size_t wanted);
 static void arduino_serial_check_host(void);
 
@@ -195,7 +193,7 @@ static cli_transport_ret_t arduino_serial_read(void *ctx) {
 }
 
 static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, cli_transport_buflen_t len) {
-  cli_transport_ret_t result = (cli_transport_ret_t)len; /* no terminal: nowhere to go */
+  cli_transport_ret_t result = (cli_transport_ret_t)len; /* sent, or dropped (see below) */
   cli_transport_buflen_t written = 0;
 
   (void)ctx;
@@ -208,7 +206,7 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
 
     /* The rest of the buffer per call (as much as the port takes): the single-byte write()
      * does not return 1 on every core (mbed returns the byte's value). A count above what
-     * was asked for is a failure (SAMD returns (size_t)-1). */
+     * was asked for takes nothing (SAMD returns (size_t)-1). */
     while (written < len && progress) {
       size_t chunk = arduino_serial_write_room((size_t)(len - written));
       size_t sent = (chunk > 0U) ? Serial.write(&buf[written], chunk) : 0U;
@@ -218,15 +216,11 @@ static cli_transport_ret_t arduino_serial_write(void *ctx, const uint8_t *buf, c
         written = (cli_transport_buflen_t)(written + sent);
       }
     }
-    if (written < len) {
-      /* Native-USB ports refuse output once the terminal has gone, STM32duino's also to a
-       * host too slow to take it: then it is dropped as above. Anything else is a write
-       * failure for the engine to handle. */
-      arduino_serial_check_host();
-      if (s_host && !s_host_changed && !arduino_serial_host_too_slow()) {
-        result = (cli_transport_ret_t)written;
-      }
-    }
+    /* What the port does not take is dropped too. Only a native-USB port refuses output:
+     * once the terminal has gone, or when the host stops reading, after the core's own
+     * timeout (STM32duino: USB_CDC_TRANSMIT_TIMEOUT ms), and the core drops it then. A UART
+     * waits until it is sent. The session ends when the terminal goes (available()), not
+     * because its host was slow to read. */
   }
 
   return result;
@@ -273,18 +267,6 @@ static bool arduino_serial_host_present(void) {
 #endif
 
   return host;
-}
-
-/* Whether the port refuses output because the host has not taken what was sent (the
- * terminal holds the port all the same; see CLI_SERIAL_HOST). */
-static bool arduino_serial_host_too_slow(void) {
-#if CLI_SERIAL_HOST == CLI_SERIAL_HOST_STM32_CDC
-  bool too_slow = !CDC_connected();
-#else
-  bool too_slow = false;
-#endif
-
-  return too_slow;
 }
 
 #if defined(ARDUINO_ARCH_RENESAS) && (CLI_SERIAL_HOST == CLI_SERIAL_HOST_TINYUSB)
@@ -340,8 +322,9 @@ static void arduino_serial_check_host(void) {
     if (!host) {
       /* The UNO R4 core keeps what the closed terminal left: input not read yet (its read()
        * refuses it while no terminal holds the port) and output not sent yet (TinyUSB keeps
-       * it when DTR drops). Both are dropped, not handed to the next terminal. The USB
-       * interrupt, which fills and empties these FIFOs, is held off meanwhile. */
+       * it when DTR drops). Both are dropped, not handed to the next terminal; a packet
+       * already handed to the USB controller (up to 64 bytes) cannot be taken back. The
+       * USB interrupt, which fills and empties these FIFOs, is held off meanwhile. */
       usbd_int_set(false);
       tud_cdc_read_flush();
       (void)tud_cdc_write_clear();

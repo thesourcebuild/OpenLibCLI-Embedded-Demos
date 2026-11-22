@@ -1716,6 +1716,10 @@ OPENLIBCLI_API int8_t cli_set_mode(cli_struct_t *cli, cli_mode_t mode);
  * Fires the @c on_mode_change callback so the application can update the
  * prompt to reflect the new privilege.
  *
+ * A lower privilege stays in effect when saved levels are returned to (@c exit, @c end,
+ * @c cli_set_mode() to an enclosing mode): none of them gives back more than it. A higher
+ * privilege lasts until the level it was set in is left.
+ *
  * @param[in] cli        Active CLI session.
  * @param[in] privilege  New privilege level (@c CLI_PRIV_USER or
  *                       @c CLI_PRIV_PRIVILEGED).

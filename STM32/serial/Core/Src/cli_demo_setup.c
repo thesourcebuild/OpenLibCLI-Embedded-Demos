@@ -239,19 +239,19 @@ static int8_t cmd_led(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const
 }
 
 static int8_t cmd_reboot(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {
+  int8_t rc = CLI_OK; /* never returned: the reset does not come back */
+
   (void)cmd;
   (void)argc;
   (void)argv;
 
-//  int8_t rc = CLI_OK;
-  
   cli_println(cli, "Resetting the system...");
   HAL_Delay(100);
   NVIC_SystemReset();
   /* NVIC_SystemReset does not return */
   while (1) {}
-  
-//  return rc;
+
+  return rc;
 }
 
 static int8_t cmd_calculator(cli_struct_t *cli, const char *cmd, cli_argc_t argc, const char *argv[]) {

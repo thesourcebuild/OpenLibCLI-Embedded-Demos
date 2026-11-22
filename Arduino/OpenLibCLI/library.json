@@ -1,6 +1,6 @@
 {
   "name": "OpenLibCLI",
-  "version": "0.1.0",
+  "version": "0.3.17",
   "description": "Static-memory command-line interface engine for Arduino targets with transport adapters for UART and Telnet-style sessions.",
   "keywords": [
     "arduino",
