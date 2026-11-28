@@ -23,6 +23,12 @@
 /*=======================================================================================
  * Includes
  *=======================================================================================*/
+#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
+/* clock_gettime() / CLOCK_MONOTONIC also under -std=c99 (glibc, musl), whatever the build
+ * passes; must precede every system header. */
+#define _DEFAULT_SOURCE
+#endif
+
 #include <ctype.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -388,7 +394,7 @@ static void cli_notify_mode_change(cli_struct_t *cli);
 static int8_t cli_nav_push(cli_struct_t *cli);
 static void cli_nav_return(cli_struct_t *cli, uint8_t level);
 static uint8_t cli_nav_floors_active(const cli_struct_t *cli);
-static void cli_nav_reset(cli_struct_t *cli);
+static void cli_nav_reset(cli_struct_t *cli, cli_mode_t mode);
 static void cli_nav_relocate(cli_struct_t *cli, cli_cmd_handle_t removed,
                              cli_cmd_handle_t replacement);
 static bool cli_is_within(const cli_struct_t *cli, cli_cmd_handle_t node,
@@ -759,7 +765,7 @@ OPENLIBCLI_API int8_t cli_cmd_builtin_disable(cli_struct_t *cli, const char *cmd
 
   if (cli != NULL) {
     /* User exec becomes the new floor: a following 'exit' ends the session. */
-    cli_nav_reset(cli);
+    cli_nav_reset(cli, CLI_MODE_EXEC);
     cli_set_privilege(cli, CLI_PRIV_USER);
     rc = CLI_OK;
   }
@@ -1448,7 +1454,7 @@ OPENLIBCLI_API void cli_request_auth(cli_struct_t *cli) {
         cli_input_newline(cli); /* below the line on screen */
       }
       /* Nothing from the current identity survives into the next login. */
-      cli_nav_reset(cli);
+      cli_nav_reset(cli, CLI_MODE_EXEC);
       cli_set_privilege(cli, CLI_PRIV_USER);
 #if CLI_ENABLE_HISTORY
       (void)cli_clear_history(cli);
@@ -2409,20 +2415,17 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...) {
     //-V::2604
     (void)va_end(ap);
   } else {
-    /* The message is formatted after its "% " prefix, so the line with the prefix can be
-     * delivered as a whole (print_transport_cb receives it like the terminal shows it). */
-    char buf[CLI_MAX_OUTPUT_BUF];
-    char *msg = &buf[2];
+    /* Room for the message after its "% " prefix: the whole line fits one output line, so
+     * print_transport_cb receives it in one piece, like the terminal shows it. */
+    char msg[CLI_MAX_OUTPUT_BUF - 2U];
 
-    buf[0] = '%';
-    buf[1] = ' ';
     //-V::2604
     (void)va_start(ap, fmt);
 #if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
     //-V:vsnprintf_P:2600
-    n = vsnprintf_P(msg, sizeof(buf) - 2U, fmt, ap);
+    n = vsnprintf_P(msg, sizeof(msg), fmt, ap);
 #else
-    n = cli_vsnprintf(msg, sizeof(buf) - 2U, fmt, ap);
+    n = cli_vsnprintf(msg, sizeof(msg), fmt, ap);
 #endif
     //-V::2604
     (void)va_end(ap);
@@ -2436,22 +2439,17 @@ OPENLIBCLI_API int cli_error_p(cli_struct_t *cli, const char *fmt, ...) {
     } else {
       /* Errors bypass filters and always appear — after any output already produced, so a
        * buffered partial line (of a command, or of a callback outside any) is delivered
-       * first. */
-      bool in_command = (cli->exec_depth > 0U);
-      cli_output_end_line(cli);
+       * first. Outside a command the cursor may sit on the prompt line: the error starts
+       * on a new line below it. */
+      bool on_prompt = (cli->exec_depth == 0U);
 #if CLI_ENABLE_PRINT_TRANSPORT_CB
-      if (cli->print_transport_cb != NULL) {
-        cli->print_transport_cb(cli, buf);
-      } else
+      on_prompt = on_prompt && (cli->print_transport_cb == NULL);
 #endif
-      {
-        /* Outside a command the cursor may sit on the prompt line: start a new line. */
-        if (!in_command) {
-          cli_input_newline(cli);
-        }
-        cli_write_str(cli, buf);
-        CLI_WSTR(cli, CLI_CRLF);
+      cli_output_end_line(cli);
+      if (on_prompt) {
+        cli_input_newline(cli);
       }
+      cli_diag(cli, CMD_STR("% "), msg, NULL);
     }
   }
 
@@ -3169,13 +3167,14 @@ static void cli_output_end_line(cli_struct_t *cli) {
 }
 
 /**
- * @brief Print an engine error line for the command line being run (unknown command,
- *        too many arguments, ...).
+ * @brief Print an error line: a @c cli_error() message, or an engine error for the command
+ *        line being run (unknown command, too many arguments, ...).
  *
- * Delivered like a @c cli_error() line: after any output already produced (an open line
- * is ended first, so a nested @c cli_exec() does not break into it), past the pipe filter,
- * and to @c print_transport_cb when one is set (in pieces of at most
- * @c CLI_MAX_OUTPUT_BUF - 1 characters, as every line it receives).
+ * Delivered after any output already produced (an open line is ended first, so a nested
+ * @c cli_exec() does not break into it), past the pipe filter, and to
+ * @c print_transport_cb when one is set (in pieces of at most @c CLI_MAX_OUTPUT_BUF - 1
+ * characters, as every line it receives). Line endings in @p arg are handled as in
+ * command output: a @c \\n starts a new line, a @c \\r is dropped.
  *
  * @param[in] cli   Active CLI session.
  * @param[in] msg   Message with its "% " prefix (in flash on AVR: @c CMD_STR()).
@@ -3193,13 +3192,18 @@ static void cli_diag(cli_struct_t *cli, const char *msg, const char *arg, const 
 
     for (size_t p = 0U; p < 3U; p++) {
       for (size_t i = 0U; parts[p] != NULL && cli_text_at(parts[p], i, in_flash[p]) != '\0'; i++) {
-        if (len == sizeof(line) - 1U) {
+        char c = cli_text_at(parts[p], i, in_flash[p]);
+
+        /* A line ending delivers the line; a full buffer delivers a piece of it. */
+        if (c == '\n' || len == sizeof(line) - 1U) {
           line[len] = '\0';
           cli->print_transport_cb(cli, line);
           len = 0U;
         }
-        line[len] = cli_text_at(parts[p], i, in_flash[p]);
-        len++;
+        if (c != '\n' && c != '\r') {
+          line[len] = c;
+          len++;
+        }
       }
     }
     line[len] = '\0';
@@ -3212,7 +3216,11 @@ static void cli_diag(cli_struct_t *cli, const char *msg, const char *arg, const 
 #else
     cli_write_str(cli, msg);
 #endif
-    cli_write_str(cli, arg); /* nothing for NULL */
+    if (arg != NULL) {
+      /* Text from a command or the user (a cli_error() message, a word typed): its line
+       * endings are written as in command output. */
+      cli_write_text(cli, arg, (int)strlen(arg));
+    }
     if (tail != NULL) {
 #if defined(__AVR__) || defined(ARDUINO_ARCH_AVR)
       cli_write_str_P(cli, tail);
@@ -3220,7 +3228,7 @@ static void cli_diag(cli_struct_t *cli, const char *msg, const char *arg, const 
       cli_write_str(cli, tail);
 #endif
     }
-    CLI_WSTR(cli, CLI_CRLF);
+    cli_write_text(cli, "\n", 1); /* ends the line, also one cli_write_text() left open */
   }
 }
 
@@ -4041,7 +4049,9 @@ static void cli_history_add(cli_struct_t *cli, const char *line) {
                                 (int)strlen(&cli->history_buf[cli->history_off[prev]]) + 1);
     }
 
-    if (off + needed > CLI_HISTORY_BUF_SIZE) {
+    /* Compared as room left (off is at most the buffer size): the sum could overflow a
+     * 16-bit int for a buffer near the cli_history_idx_t limit. */
+    if (needed > CLI_HISTORY_BUF_SIZE - off) {
       off = (cli_history_idx_t)0; /* Entries are never split across the buffer end. */
     }
 
@@ -6187,9 +6197,9 @@ static int8_t cli_auth_limit_reached(cli_struct_t *cli, cli_auth_state_enum_t re
  * @brief Verify collected credentials and transition auth state.
  *
  * Calls @c authorization_cb or searches the local user table.  On success, marks the
- * session authenticated; privileged users start in @c CLI_MODE_ENABLE, which is
- * then the login floor.  On failure, increments the attempt counter and
- * re-prompts or applies the failure mode.
+ * session authenticated and starts it at the login floor: @c CLI_MODE_ENABLE for
+ * privileged users, @c CLI_MODE_EXEC otherwise.  On failure, increments the attempt
+ * counter and re-prompts or applies the failure mode.
  *
  * @param[in] cli  Active CLI session.
  *
@@ -6202,7 +6212,7 @@ static int8_t cli_auth_verify(cli_struct_t *cli) {
 
   /* Every login starts from a clean, unprivileged state. The mode-change callback hears of
    * it only when something changes (the password is still typed in at this point). */
-  cli_nav_reset(cli);
+  cli_nav_reset(cli, CLI_MODE_EXEC);
   if (cli->privilege != CLI_PRIV_USER) {
     cli_set_privilege(cli, CLI_PRIV_USER);
   }
@@ -6242,11 +6252,15 @@ static int8_t cli_auth_verify(cli_struct_t *cli) {
     if (match >= 0) {
       cli_set_privilege(cli, cli->user_privileges[match]);
     }
-    if (cli->session_state == CLI_SESSION_RUN && cli->auth_state == CLI_AUTH_AUTHENTICATED &&
-        cli->privilege >= CLI_PRIV_PRIVILEGED) {
-      /* Privileged exec is this login's floor: no level to 'exit' back to. */
-      cli->mode = CLI_MODE_ENABLE;
-      cli_notify_mode_change(cli);
+    if (cli->session_state == CLI_SESSION_RUN && cli->auth_state == CLI_AUTH_AUTHENTICATED) {
+      /* The session starts at this login's floor, with no level to 'exit' back to:
+       * privileged exec for a privileged user, user exec otherwise. Levels the callback
+       * entered while the login was checked (cli_set_mode()) are not kept. */
+      if (cli->privilege >= CLI_PRIV_PRIVILEGED) {
+        cli_nav_reset(cli, CLI_MODE_ENABLE);
+      } else {
+        cli_nav_reset(cli, CLI_MODE_EXEC);
+      }
     }
     rc = CLI_OK;
   } else {
@@ -6535,7 +6549,7 @@ static void cli_reset_input(cli_struct_t *cli) {
  * @param[in] cli  Active CLI session.
  */
 static void cli_session_reset(cli_struct_t *cli) {
-  cli_nav_reset(cli);
+  cli_nav_reset(cli, CLI_MODE_EXEC);
   cli_set_privilege(cli, CLI_PRIV_USER);
   cli_escape_reset(cli);
   cli_reset_input(cli);
@@ -6759,13 +6773,15 @@ static void cli_nav_return(cli_struct_t *cli, uint8_t level) {
 }
 
 /**
- * @brief Drop all saved navigation levels and return to user exec at the root.
+ * @brief Drop all saved navigation levels: @p mode at the root becomes the login floor.
  *
- * Every caller then sets @c CLI_PRIV_USER.
+ * The callers that return to user exec then set @c CLI_PRIV_USER; a login keeps the
+ * privilege it granted, with privileged exec as the floor of a privileged one.
  *
- * @param[in] cli  Active CLI session.
+ * @param[in] cli   Active CLI session.
+ * @param[in] mode  Floor mode: @c CLI_MODE_EXEC, or @c CLI_MODE_ENABLE for a privileged login.
  */
-static void cli_nav_reset(cli_struct_t *cli) {
+static void cli_nav_reset(cli_struct_t *cli, cli_mode_t mode) {
   cli_mode_t old_mode = cli->mode;
 
   for (uint8_t k = 0U; k < (uint8_t)CLI_MAX_EXEC_DEPTH; k++) {
@@ -6774,7 +6790,7 @@ static void cli_nav_reset(cli_struct_t *cli) {
   }
   cli->nav_depth = 0U;
   cli->context = CLI_CMD_ROOT;
-  cli->mode = CLI_MODE_EXEC;
+  cli->mode = mode;
   if (cli->mode != old_mode) {
     cli_notify_mode_change(cli);
   }

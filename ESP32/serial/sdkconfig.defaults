@@ -1,0 +1,3 @@
+# The CLI runs in the main task. With this demo's cli_config.h (1 KB output line, 512-byte
+# input line) a command that prints needs more stack than the ESP-IDF default of 3584 bytes.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

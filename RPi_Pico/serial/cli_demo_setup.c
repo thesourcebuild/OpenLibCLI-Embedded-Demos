@@ -33,7 +33,7 @@
 
 #define CLI_DEMO_BANNER_SERIAL                                       \
   "************************************************************\r\n" \
-  "*          OpenLibCLI  --  Serial (UART) on Pico           *\r\n" \
+  "*         OpenLibCLI  --  Serial (USB CDC) on Pico         *\r\n" \
   "*      Pure-C, 100% Static Allocation CLI Engine           *\r\n" \
   "************************************************************"
 
@@ -150,7 +150,7 @@ static int8_t cmd_show_version(cli_struct_t *cli, const char *cmd, cli_argc_t ar
 
   cli_println(cli, "OpenLibCLI Library version: %s", CLI_VERSION_STRING);
   cli_println(cli, "Platform   : Raspberry Pi Pico");
-  cli_println(cli, "Transports : Serial (UART via stdio)");
+  cli_println(cli, "Transports : Serial (USB CDC via stdio)");
   return CLI_OK;
 }
 

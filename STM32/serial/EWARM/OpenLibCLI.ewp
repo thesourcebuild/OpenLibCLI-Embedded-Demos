@@ -1446,6 +1446,12 @@
                     </configuration>
                 </group>
                 <file>
+                    <name>$PROJ_DIR$\..\Core\Src\circular_buffer.c</name>
+                </file>
+                <file>
+                    <name>$PROJ_DIR$\..\Core\Src\circular_buffer.h</name>
+                </file>
+                <file>
                     <name>$PROJ_DIR$\..\Core\Src\cli_demo_setup.c</name>
                 </file>
                 <file>

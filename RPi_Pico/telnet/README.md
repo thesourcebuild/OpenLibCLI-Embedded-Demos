@@ -16,10 +16,10 @@ This directory contains the Raspberry Pi Pico W / Pico 2 W telnet demo for OpenL
 
 ## Development Environment
 
-- SDK: Raspberry Pi Pico SDK 2.2.0
-- Toolchain: ARM GCC 14.2 Rel1
+- SDK: Raspberry Pi Pico SDK 2.3.0
+- Toolchain: ARM GCC 15.2 Rel1
 - IDE: VS Code with Raspberry Pi Pico extension
-- Flashing: picotool 2.2.0-a4 (UF2 / `picotool load`)
+- Flashing: picotool 2.3.0 (UF2 / `picotool load`)
 
 ## Usage
 

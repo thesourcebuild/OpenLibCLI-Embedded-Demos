@@ -78,6 +78,11 @@ target_link_libraries(OpenLibCLI
 # Nothing in this demo shows the engine's tick timing (cli_tick_stats_get()): left out.
 target_compile_definitions(OpenLibCLI PRIVATE CLI_ENABLE_TIMMING_STATS=0)
 
+# The CLI runs on core 0's stack. The SDK reserves 2 KB for it, less than a command that
+# prints needs with the desktop cli_config.h (a 1 KB output line, printf, the USB interrupt):
+# reserve the whole 4 KB scratch bank the stack lives in.
+target_compile_definitions(OpenLibCLI PRIVATE PICO_STACK_SIZE=0x1000)
+
 # Enable USB CDC serial (required for stdio over USB)
 pico_enable_stdio_usb(OpenLibCLI 1)
 pico_enable_stdio_uart(OpenLibCLI 0)

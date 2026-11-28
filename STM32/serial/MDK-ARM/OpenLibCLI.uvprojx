@@ -415,6 +415,11 @@
               <FilePath>..\Core\Src\cli_demo_setup.c</FilePath>
             </File>
             <File>
+              <FileName>circular_buffer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\circular_buffer.c</FilePath>
+            </File>
+            <File>
               <FileName>cli_transport_serial.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Core\Src\cli_transport_serial.c</FilePath>
@@ -428,6 +433,11 @@
               <FileName>cli_demo_setup.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Core\Src\cli_demo_setup.h</FilePath>
+            </File>
+            <File>
+              <FileName>circular_buffer.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Src\circular_buffer.h</FilePath>
             </File>
           </Files>
         </Group>

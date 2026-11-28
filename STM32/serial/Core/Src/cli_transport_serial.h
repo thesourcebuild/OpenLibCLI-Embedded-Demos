@@ -4,6 +4,11 @@
  *
  * Declares transport initialization for wiring STM32 HAL UART into
  * @c cli_transport_struct_t.
+ *
+ * Input is received by the UART interrupt: its global interrupt must be enabled, with its
+ * IRQ handler calling @c HAL_UART_IRQHandler() (CubeMX: NVIC Settings, "USARTx global
+ * interrupt"). The transport implements @c HAL_UART_RxCpltCallback() and
+ * @c HAL_UART_ErrorCallback(), so the application must not define them too.
  */
 
 #ifndef OPENLIBCLI_STM32_CLI_TRANSPORT_SERIAL_H
@@ -48,7 +53,11 @@ typedef struct __UART_HandleTypeDef UART_HandleTypeDef;
  *=======================================================================================*/
 
 /**
- * @brief Initialize serial transport vtable for the supplied UART handle.
+ * @brief Initialize serial transport vtable for the supplied UART handle and start
+ *        receiving from it.
+ *
+ * One UART receives at a time: a later call moves the reception to its UART and discards
+ * the input not read yet.
  *
  * @param[out] transport Transport descriptor to initialize.
  * @param[in]  huart     STM32 HAL UART handle used for TX/RX.

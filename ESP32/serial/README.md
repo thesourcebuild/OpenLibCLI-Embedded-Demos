@@ -18,7 +18,7 @@ This directory contains the ESP32 serial (UART) demo for OpenLibCLI.
 
 ## Development Environment
 
-- SDK: ESP-IDF 6.0
+- SDK: ESP-IDF 6.1
 - IDE: VS Code with ESP-IDF extension, or command-line with `idf.py`
 - Flashing: `idf.py flash` (via UART or JTAG)
 
@@ -44,6 +44,8 @@ idf.py -p PORT flash monitor
 Connect to the serial console (115200 baud by default) and start the CLI. Press `Ctrl+]` to exit the monitor.
 
 ## Notes
+
+The CLI runs in the main task. `sdkconfig.defaults` sets its stack to 6144 bytes (the ESP-IDF default, 3584, is too small for a command that prints with this demo's buffers). The defaults apply when `sdkconfig` is created: after updating from an older version, delete `sdkconfig`, or set "Main task stack size" in `menuconfig`.
 
 The CLI runs on the ESP-IDF console port, as selected in `menuconfig` under "ESP-STDIO" → "Channel for console output":
 

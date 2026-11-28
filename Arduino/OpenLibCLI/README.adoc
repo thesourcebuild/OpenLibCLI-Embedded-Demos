@@ -1,11 +1,11 @@
 = OpenLibCLI Arduino Library
 
 OpenLibCLI is a pure C99 command line interface (CLI) engine designed for embedded and desktop systems.
-This Arduino library package contains the core CLI sources under `src/cli` and ready-to-run Arduino demos under `examples`.
+This Arduino library package contains the core CLI sources under `src` and ready-to-run Arduino demos under `examples`.
 
 == Folder Layout
 
-* `src/cli` - core OpenLibCLI engine sources and headers.
+* `src` - core OpenLibCLI engine sources and headers (`src/config/cli_config.h` is the embedded configuration).
 * `examples/serial` - UART/Serial demo sketch.
 * `examples/telnet` - WiFi Telnet demo sketch.
 
@@ -28,6 +28,6 @@ This Arduino library package contains the core CLI sources under `src/cli` and r
 
 == Notes
 
-* The Telnet example requires a compatible WiFi board and valid SSID/password. It keeps trying to connect, and starts the Telnet server as soon as WiFi is up.
+* The Telnet example runs on ESP32 boards (esp32 core), the Raspberry Pi Pico W / Pico 2 W (Arduino-Pico core) and the UNO R4 WiFi, and needs a valid SSID/password. It keeps trying to connect, and starts the Telnet server as soon as WiFi is up.
 * With `CLI_ENABLE_TIMMING_STATS` set to 1, the Serial example measures the engine's tick timing and shows it with `show stats`.
 * Demos are configured for static allocation behavior in the included cli_config headers.

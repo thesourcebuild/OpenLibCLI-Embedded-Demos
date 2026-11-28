@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/OpenLibCLI/cli.c
     Core/Src/OpenLibCLI/utils/cli_args_parse.c
     # Serial transport
+    Core/Src/circular_buffer.c
     Core/Src/cli_transport_serial.c
     # Demo setup
     Core/Src/cli_demo_setup.c

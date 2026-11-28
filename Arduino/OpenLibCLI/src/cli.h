@@ -408,8 +408,10 @@ typedef int8_t (*cli_cmd_handler_fn)(cli_struct_t *cli, const char *cmd, cli_arg
  *
  * Called instead of the local user table when set. The session privilege is
  * reset to @c CLI_PRIV_USER before the call; to grant a higher level, call
- * @c cli_set_privilege(cli, ...) before returning @c CLI_OK. A privilege of
- * @c CLI_PRIV_PRIVILEGED or above starts the session in @c CLI_MODE_ENABLE.
+ * @c cli_set_privilege(cli, ...) before returning @c CLI_OK. The session then starts
+ * at the login floor, with no level to @c exit back to: @c CLI_MODE_ENABLE for a
+ * privilege of @c CLI_PRIV_PRIVILEGED or above, @c CLI_MODE_EXEC otherwise. A mode
+ * the callback enters (@c cli_set_mode()) is not kept.
  *
  * @param[in] cli       The CLI session being authenticated.
  * @param[in] username  Username string typed by the user.

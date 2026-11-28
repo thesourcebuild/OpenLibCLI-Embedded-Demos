@@ -19,7 +19,11 @@
  *=======================================================================================*/
 
 #include <Arduino.h>
+#if defined(ARDUINO_UNOWIFIR4)
+#include <WiFiS3.h> /* UNO R4 WiFi */
+#else
 #include <WiFi.h>
+#endif
 #include <Client.h>
 #include <string.h>
 #if defined(ARDUINO_ARCH_ESP32)
@@ -108,10 +112,13 @@ void cli_transport_telnet_init(cli_telnet_ctx_struct_t *ctx, cli_transport_struc
     memset(ctx, 0, sizeof(*ctx));
     ctx->client_handle = client_handle;
 
-    // Disable Nagle's algorithm to reduce lag for interactive CLI
+#if !defined(ARDUINO_UNOWIFIR4)
+    // Disable Nagle's algorithm to reduce lag for interactive CLI. WiFiS3 (UNO R4 WiFi)
+    // has no setNoDelay(): its TCP runs on the board's ESP32-S3 module.
     if (client_handle) {
       ((WiFiClient *)client_handle)->setNoDelay(true);
     }
+#endif
 
     ctx->state = TELNET_STATE_NORMAL;
 
@@ -119,7 +126,8 @@ void cli_transport_telnet_init(cli_telnet_ctx_struct_t *ctx, cli_transport_struc
     transport->read = cli_telnet_transport_read;
     transport->write = cli_telnet_transport_write;
     /* Nothing to flush: write() hands each byte to the TCP stack, which sends it at once
-     * (Nagle is off). Client::flush() would only wait for the client's ACK (up to 300 ms
+     * (Nagle is off where the core can turn it off). Client::flush() would only wait for
+     * the client's ACK (up to 300 ms
      * per prompt on Arduino-Pico); on ESP32 it does nothing. */
     transport->flush = NULL;
     transport->ctx = ctx;

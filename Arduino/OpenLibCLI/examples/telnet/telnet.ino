@@ -26,7 +26,11 @@
 #include <Adafruit_TinyUSB.h>
 #endif
 
+#if defined(ARDUINO_UNOWIFIR4)
+#include <WiFiS3.h> /* UNO R4 WiFi: WiFi through the board's ESP32-S3 module */
+#else
 #include <WiFi.h>
+#endif
 #if defined(ARDUINO_ARCH_ESP32)
 #include <lwip/sockets.h> /* keepalive socket options */
 #endif
@@ -227,7 +231,13 @@ void setup(void) {
   Serial.println("OpenLibCLI Arduino Telnet demo");
   Serial.println("Connecting WiFi...");
 
+#if defined(ARDUINO_UNOWIFIR4)
+  /* WiFiS3 has no mode(): begin() selects station mode. Its begin() also waits up to 10 s
+   * for the join; without that wait it starts the join and returns, as on the other cores. */
+  WiFi.setTimeout(0UL);
+#else
   WiFi.mode(WIFI_STA);
+#endif
   wifi_begin(false); /* loop() starts the server once it is connected */
 }
 
@@ -239,7 +249,8 @@ void loop(void) {
   /* Until WiFi first connects the server is not started: there is nothing to accept. */
   if (s_server_started) {
     /* accept() on the cores that have it (ESP32 core 3 deprecates available() for it). */
-#if defined(ARDUINO_ARCH_RP2040) || (defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
+#if defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_UNOWIFIR4) ||                               \
+    (defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3)
     incoming = s_telnet_server.accept();
 #else
     incoming = s_telnet_server.available();
